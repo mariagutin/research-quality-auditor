@@ -88,6 +88,25 @@ docker exec -i supabase_db_research-quality-auditor \
 - `-v ON_ERROR_STOP=1` makes psql stop and return a non-zero exit code on the
   first failed check.
 
+## `revoke_anon_privileges_test.sql` — anon least-privilege test
+
+Verifies migration `20261106120000_revoke_anon_table_privileges.sql`: after it
+runs, the `anon` role has **no privileges** on any of the five application
+tables, while `authenticated` keeps its SELECT/INSERT/UPDATE/DELETE access.
+
+This matters because `anon` is otherwise left with platform-default privileges
+the app never uses — including `TRUNCATE`, which is **destructive**: it empties a
+table outright and, unlike `DELETE`, is not filtered by RLS. The test is
+self-contained — it performs the same revoke the migration does, inside a
+transaction that ends in `ROLLBACK`, and only reads the privilege catalog
+(`information_schema`), so it touches no data. Run it the same way:
+
+```sh
+docker exec -i supabase_db_research-quality-auditor \
+  psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -f - < supabase/tests/revoke_anon_privileges_test.sql
+```
+
 ### Reading the result
 
 - A clean run prints a series of `PASS:` / `SETUP:` notices, ends with
