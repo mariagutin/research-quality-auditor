@@ -107,6 +107,27 @@ docker exec -i supabase_db_research-quality-auditor \
   -f - < supabase/tests/revoke_anon_privileges_test.sql
 ```
 
+## `revoke_authenticated_extras_test.sql` — authenticated least-privilege test
+
+Verifies migration `20261107100034_revoke_authenticated_extra_privileges.sql`:
+after it runs, the `authenticated` role holds **exactly** SELECT, INSERT, UPDATE,
+DELETE on each of the five application tables — with **no** `TRUNCATE`,
+`REFERENCES`, `TRIGGER`, or `MAINTAIN` — and owner-only RLS is still enabled on
+every table.
+
+Before this migration, `authenticated` had `GRANT ALL` (the four data privileges
+plus those four extras it never uses). The test is self-contained — it performs
+the same revoke the migration does, inside a transaction that ends in `ROLLBACK`,
+and only reads the privilege and RLS catalogs (it also uses `has_table_privilege`
+to confirm none of the extras remain via any path), so it touches no data. Run it
+the same way:
+
+```sh
+docker exec -i supabase_db_research-quality-auditor \
+  psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -f - < supabase/tests/revoke_authenticated_extras_test.sql
+```
+
 ### Reading the result
 
 - A clean run prints a series of `PASS:` / `SETUP:` notices, ends with
