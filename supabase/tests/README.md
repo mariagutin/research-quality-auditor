@@ -51,6 +51,38 @@ docker exec -i supabase_db_research-quality-auditor \
   -f - < supabase/tests/rls_two_user_test.sql
 ```
 
+## `grants_data_api_test.sql` — Data API grants test
+
+Verifies migration `20261106000000_grant_data_api_access_to_authenticated.sql`:
+that a signed-in (`authenticated`) user can reach their own rows **without**
+relying on Supabase's automatic table grants, while owner-only RLS still isolates
+users and `anon` gets no access.
+
+Because a local `supabase start` stack auto-grants table privileges, this test
+reproduces the hosted "**Automatically expose new tables** = disabled" condition
+by revoking those auto-grants inside its transaction, then applying the exact
+grants from the migration and checking:
+
+- **Negative control** — with grants revoked, even the owner is blocked (`42501`),
+  proving the grant is genuinely required (RLS alone is not enough).
+- **Owner access** — after the grant, the owner can SELECT/INSERT/UPDATE/DELETE
+  their own rows.
+- **Isolation** — owner-only RLS still hides the other user's rows.
+- **anon** — has no access to the application tables.
+
+Same safety model as above: synthetic data only, one transaction that ends in
+`ROLLBACK`, local only, no cleanup needed. Run it the same way:
+
+```sh
+docker exec -i supabase_db_research-quality-auditor \
+  psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -f - < supabase/tests/grants_data_api_test.sql
+```
+
+> Prerequisite: the grants migration must be applied to your local DB first
+> (`npx supabase migration up`, or `npx supabase db reset` to replay all
+> migrations — both local only).
+
 - The container name follows `supabase_db_<project-dir-name>`. Confirm yours
   with `docker ps --format '{{.Names}}' | grep supabase_db`.
 - `-v ON_ERROR_STOP=1` makes psql stop and return a non-zero exit code on the
