@@ -20,6 +20,7 @@ Maria is learning development. In this repository:
 - **Lead with a short overview.** When a task is complete, present the result in a brief
   overview of no more than five sentences, then explain one topic at a time as above.
   Keep detailed technical results in the project documentation, not the chat.
-- **Keep testing local and safe.** Test migrations against a local, disposable database
-  only — never hosted Supabase. Use synthetic/sample data, never real research data.
+- **Test migrations locally first.** Use a disposable local database and synthetic data.
+  Apply migrations to hosted Supabase only when Maria explicitly authorizes it. Do not
+  run local test scripts against hosted or use real research data for testing.
 - **Never commit or push** unless explicitly told to, and only the files named.
