@@ -74,32 +74,78 @@ are preserved; only the project name/repository are adapted to this project.
     migration, `20261106000000_grant_data_api_access_to_authenticated.sql`, adds
     the table grants the signed-in workflow needs — see item 8.
 
-- [ ] **8. Connect the app to Supabase.** Make a hosted Supabase project (free
+- [x] **8. Connect the app to Supabase.** Make a hosted Supabase project (free
   plan), run the SQL there (SQL Editor or connected CLI), save the SQL as a
   migration file, and put your Supabase keys in `.env.local`.
-  - *Status: Partial.* ✅ A hosted Supabase project now exists (you created it,
-    free plan, 2026-11-06). ✅ The SQL is saved as migrations
-    (`20261105000000_init…` and `20261106000000_grant_data_api_access…`, the
-    latter adding the grants the signed-in workflow needs when "Automatically
-    expose new tables" is off — verified locally by `grants_data_api_test.sql`).
-    ⬜ The migrations have **not** been run on the hosted project, the CLI is
-    **not linked** (`linked_project` is null), and there is **no `.env.local`**
-    with keys. These remain for when hosted work is authorized.
+  - *Status: Complete (verified 2026-11-07).* ✅ A hosted Supabase project exists
+    (free plan, created 2026-11-06; ref `czrjqgxmtpdxfkohwlkh`). ✅ The CLI is
+    linked to it. ✅ All four migrations are saved as files **and applied to
+    hosted** — schema + owner-only RLS (`20261105000000_init…`), Data API grants
+    for `authenticated` (`20261106000000_grant_data_api…`), revoke of all `anon`
+    table privileges (`20261106120000_revoke_anon…`), and revoke of
+    `authenticated`'s unused extras (`20261107100034_revoke_authenticated_extra…`).
+    Hosted permissions were confirmed by read-only checks: `authenticated` holds
+    exactly SELECT/INSERT/UPDATE/DELETE and `anon` has no table access.
+  - ✅ `.env.local` holds the two **public** values (`NEXT_PUBLIC_SUPABASE_URL`
+    and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`); it is git-ignored and the secret
+    key is deliberately not stored. The Supabase client packages
+    (`@supabase/supabase-js`, `@supabase/ssr`) are installed; a reusable browser
+    client lives at `lib/supabase/client.ts`.
+  - ✅ **Connection verified end to end (2026-11-07).** A temporary
+    `/connection-check` page issued one read-only, unauthenticated query against
+    hosted `reviews`; the project returned **HTTP 401, code `42501` "permission
+    denied for table reviews"** — the expected anonymous denial — confirmed both
+    in the browser and via an equivalent REST call. This proves the app reaches
+    our hosted project with the publishable key and that anonymous callers have
+    no table access. The temporary page was then removed; the reusable client at
+    `lib/supabase/client.ts` was kept.
+  - ⬜ *Still untested here:* the **signed-in** path (an `authenticated` user
+    reaching only their own rows under owner-only RLS) needs real auth and is
+    covered by item 9.
 
 - [ ] **9. Build one feature at a time.** Start with sign-up / log-in, then each
   MVP #1 feature; write a new ADR for any new big choice.
-  - *Status: Not started.* `app/` is still the starter (`page.tsx` states
-    "Authentication, uploads, and quotation checking come in later steps"). No
-    authentication or feature code yet. The database foundation (item 7) is in
-    place, but no user-facing feature is built.
+  - *Status: In progress — sign-up / login / sign-out complete & tested
+    (2026-11-09).* 🔧 **Auth session foundation:** server-side Supabase client
+    (`lib/supabase/server.ts`) and a session-refresh helper wired through the root
+    `middleware.ts` (`lib/supabase/middleware.ts`), joining the browser client
+    from item 8 — these carry each signed-in user's identity on every request,
+    which owner-only RLS uses to scope data.
+  - ✅ **Auth screens built:** `app/login/` (combined sign-up / log-in form +
+    server actions in `actions.ts`), `app/auth/confirm/route.ts` (handles the
+    emailed confirmation link via `verifyOtp` / token-hash, with a code-flow
+    fallback), `app/auth/auth-code-error/page.tsx`, and a home page
+    (`app/page.tsx`) showing signed-in state, a confirmation banner, and sign-out.
+  - ✅ **End-to-end flow verified locally against hosted Supabase (2026-11-09),
+    email confirmation ON:** signed up → received confirmation email → clicked the
+    link and was signed in → signed out → **logged back in with email + password
+    and reached the home page as the signed-in user.** Error messages confirmed:
+    a wrong password shows a clear "Invalid login credentials" alert.
+  - ⚙️ **Dashboard settings this depends on:** Site URL + redirect URLs set to
+    `http://localhost:3000` for dev; the **"Confirm signup" email template** was
+    changed to the token-hash link
+    (`{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email`) — the
+    default code-flow link failed because the server-side PKCE code-verifier
+    wasn't available on the emailed click.
+  - ⬜ Still to come under item 9: the MVP #1 feature screens (uploads, quotation
+    checking, decisions); `app/` beyond auth is still minimal.
+  - **Decision (2026-11-07): email confirmation is kept ON** (Supabase default),
+    including for development. Caveat: the built-in email sender only delivers to
+    addresses that are **members of the Supabase org/project team**, and is
+    rate-limited (~2 emails/hour). So test sign-ups must use a team-member
+    address until custom SMTP is configured (see pre-launch reminder under
+    item 11). Toggle lives in the dashboard (Authentication → Email provider →
+    "Confirm email"), not in our migrations.
 
 - [ ] **10. Run and test the app on your computer.** Click through every screen,
   make two test accounts, and confirm one person cannot see another's
   information.
   - *Status: Partial.* ✅ **Database-level** two-user isolation is verified by
     `supabase/tests/rls_two_user_test.sql` (owner-only visibility, cross-user
-    blocks, cascade). ⬜ **App-level** click-through and two real sign-in
-    accounts aren't possible yet because the features in item 9 don't exist.
+    blocks, cascade). ✅ **App-level auth** now works end to end for one account
+    (sign-up → email confirm → login → sign-out; see item 9). ⬜ **Two-user
+    app-level** click-through (confirming one account can't see another's data
+    through the UI) still needs the item 9 feature screens, which don't exist yet.
 
 ## Launch it on the internet
 
@@ -109,6 +155,11 @@ are preserved; only the project name/repository are adapted to this project.
 - [ ] **11. Connect your GitHub repository to Vercel** and add your Supabase
   keys in Vercel's environment settings.
   - *Status: Not started (out of scope — deployment).*
+  - ⚠️ **Pre-launch reminder:** configure a real **custom SMTP sender** in the
+    hosted Supabase dashboard. Email confirmation is ON (see item 9), but the
+    built-in sender only delivers to team-member addresses and is rate-limited
+    (~2/hour); custom SMTP removes the recipient restriction and raises the cap so
+    real users can actually receive confirmation emails.
 
 - [ ] **12. Push your code and let Vercel publish it.**
   - *Status: Not started (out of scope — deployment).*
@@ -147,8 +198,9 @@ are preserved; only the project name/repository are adapted to this project.
 - **Item 4:** ⚠️ repo-name wording in the checklist
   ("Week 3 - Research Quality Auditor research-quality-auditor") vs. the actual
   repo name `research-quality-auditor`.
-- **Item 8:** partial — hosted project created and SQL saved as migrations
-  (including the Data API grants migration); hosted SQL run, CLI link, and
-  `.env.local` not done (deferred by the local-only restriction).
+- **Item 8:** ✅ complete (verified 2026-11-07) — hosted project linked, all four
+  migrations applied to hosted, `.env.local` set with the two public values, a
+  reusable browser client added, and the connection verified (anonymous read
+  correctly denied, HTTP 401 / `42501`).
 - **Items 9–13:** app features and deployment not started; item 10 is only
   partially met (database-level isolation only).
