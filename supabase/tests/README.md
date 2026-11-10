@@ -128,6 +128,64 @@ docker exec -i supabase_db_research-quality-auditor \
   -f - < supabase/tests/revoke_authenticated_extras_test.sql
 ```
 
+## `create_review_with_documents_test.sql` — atomic review-save function test
+
+Verifies migration `20261109000000_create_review_with_documents_function.sql`:
+the `create_review_with_documents(reviewId, name, documents)` function creates a
+review and its document rows **atomically**, enforcing the save rules. Acting as a
+synthetic signed-in user, it checks:
+
+- **Not authenticated** — with no signed-in user the call is rejected and writes
+  nothing.
+- **Happy path** — one report + two transcripts creates one review (pre-check
+  `draft` status, name = report filename minus `.md`) and three documents; each
+  transcript's confirmed participant id is saved; the report's is `NULL`.
+- **Exactly one report** — zero reports and two reports are both rejected, leaving
+  no rows.
+- **At least one transcript** — a report with no transcript is rejected, no rows.
+- **Transcript participant-id guard** — a missing and a blank participant id are
+  both rejected, no rows.
+- **Atomic rollback** — a set that passes every up-front rule but makes the
+  *document* insert fail (a `NULL storage_path`) must undo the `reviews` row the
+  function already inserted: zero rows remain.
+
+Same safety model: synthetic data only, one transaction that ends in `ROLLBACK`,
+local only, no cleanup needed. Run it the same way:
+
+```sh
+docker exec -i supabase_db_research-quality-auditor \
+  psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -f - < supabase/tests/create_review_with_documents_test.sql
+```
+
+## `review_files_storage_test.sql` — private Storage bucket policy test
+
+Verifies migration `20261110000000_create_review_files_storage_bucket.sql`: the
+private `review-files` bucket and its owner-only policies on `storage.objects`.
+With two synthetic users (Anna and Bob) it checks:
+
+- **Own folder works** — Anna can INSERT and SELECT objects whose first path folder
+  is her own user id.
+- **No writing into another user's folder** — Anna uploading into Bob's folder is
+  rejected (INSERT `WITH CHECK`), leaving no row there.
+- **No move/rename** — there is **no UPDATE policy**, so renaming an object (to
+  move it into Bob's folder, or within Anna's own folder) matches zero rows and
+  changes nothing: the stored object name is fixed.
+- **Blocked from others' files** — Bob cannot SELECT Anna's files (they are
+  invisible); a signed-out (`anon`) visitor sees nothing and cannot upload.
+- **Final sweep (RLS bypassed)** — exactly Anna's one file exists; Bob's folder is
+  empty; nothing leaked.
+
+It inserts synthetic rows straight into `storage.objects` (no real file bytes),
+in one transaction that ends in `ROLLBACK`; local only, no cleanup needed. Run it
+the same way:
+
+```sh
+docker exec -i supabase_db_research-quality-auditor \
+  psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -f - < supabase/tests/review_files_storage_test.sql
+```
+
 ### Reading the result
 
 - A clean run prints a series of `PASS:` / `SETUP:` notices, ends with

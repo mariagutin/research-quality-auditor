@@ -47,8 +47,16 @@ export default async function HomePage({
               Signed in as <strong>{user.email}</strong>.
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Uploads and quotation checking come in later steps.
+              Quotation checking comes in a later step.
             </Typography>
+            <Button
+              component={Link}
+              href="/reviews/new"
+              variant="contained"
+              sx={{ alignSelf: "flex-start" }}
+            >
+              Start a new check
+            </Button>
             <Box component="form" action={signout}>
               <Button type="submit" variant="outlined">
                 Sign out
