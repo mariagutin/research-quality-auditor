@@ -31,7 +31,12 @@ export interface QuotationResult {
   checking_result: "no_issues" | "has_issues";
   matched_document_id: string | null;
   matched_excerpt: string | null;
-  issues?: { issue_type: string; explanation?: string }[];
+  issues?: {
+    issue_type: string;
+    explanation?: string;
+    source_document_id?: string | null;
+    source_excerpt?: string | null;
+  }[];
 }
 
 export type RunCheckResult =
@@ -122,8 +127,21 @@ export function analyzeReport(args: {
   const confirmedIds = [...new Set(transcripts.map((t) => t.participantId).filter(Boolean))];
   const perTranscript = transcripts.map((t) => ({
     documentId: t.documentId,
+    participantId: t.participantId,
     lines: participantLines(t.text, t.participantId),
   }));
+
+  // First transcript in `list` with a participant line containing the quote.
+  function findIn(
+    list: typeof perTranscript,
+    needle: string,
+  ): { documentId: string; participantId: string; line: string } | null {
+    for (const t of list) {
+      const line = t.lines.find((l) => l.includes(needle));
+      if (line) return { documentId: t.documentId, participantId: t.participantId, line };
+    }
+    return null;
+  }
 
   const results: QuotationResult[] = [];
   const quote = /"([^"]*)"/g;
@@ -137,35 +155,37 @@ export function analyzeReport(args: {
     const end = codePointIndex(reportText, utf16Start + inner.length);
     const listed = detectAttribution(reportText, m.index, confirmedIds);
 
-    let matchedDocumentId: string | null = null;
-    let matchedExcerpt: string | null = null;
-    for (const t of perTranscript) {
-      const line = t.lines.find((l) => l.includes(inner));
-      if (line) {
-        matchedDocumentId = t.documentId;
-        matchedExcerpt = line;
-        break;
+    // Attribution-aware matching: prefer the participant the report names.
+    //   - found in that participant's speech  -> attribution verified
+    //   - found only in another's speech       -> participant_mismatch
+    //   - found nowhere                        -> quote_not_found
+    //   - no participant named                 -> any participant's speech, no flag
+    let matched: { documentId: string; participantId: string; line: string } | null = null;
+    let mismatch = false;
+    if (listed) {
+      matched = findIn(perTranscript.filter((t) => t.participantId === listed), inner);
+      if (!matched) {
+        const other = findIn(perTranscript.filter((t) => t.participantId !== listed), inner);
+        if (other) {
+          matched = other;
+          mismatch = true;
+        }
       }
+    } else {
+      matched = findIn(perTranscript, inner);
     }
 
-    if (matchedDocumentId) {
+    const base = {
+      report_document_id: reportDocumentId,
+      original_text: inner,
+      listed_participant_id: listed,
+      start_offset: start,
+      end_offset: end,
+    };
+
+    if (!matched) {
       results.push({
-        report_document_id: reportDocumentId,
-        original_text: inner,
-        listed_participant_id: listed,
-        start_offset: start,
-        end_offset: end,
-        checking_result: "no_issues",
-        matched_document_id: matchedDocumentId,
-        matched_excerpt: matchedExcerpt,
-      });
-    } else {
-      results.push({
-        report_document_id: reportDocumentId,
-        original_text: inner,
-        listed_participant_id: listed,
-        start_offset: start,
-        end_offset: end,
+        ...base,
         checking_result: "has_issues",
         matched_document_id: null,
         matched_excerpt: null,
@@ -175,6 +195,29 @@ export function analyzeReport(args: {
             explanation: "Quote not found in any participant's transcript.",
           },
         ],
+      });
+    } else if (mismatch) {
+      results.push({
+        ...base,
+        checking_result: "has_issues",
+        matched_document_id: matched.documentId,
+        matched_excerpt: matched.line,
+        issues: [
+          {
+            issue_type: "participant_mismatch",
+            explanation: `Report attributes this quote to ${listed}, but it was said by ${matched.participantId}.`,
+            source_document_id: matched.documentId,
+            source_excerpt: matched.line,
+          },
+        ],
+      });
+    } else {
+      // Attribution verified, or an unattributed wording match: no attribution issue.
+      results.push({
+        ...base,
+        checking_result: "no_issues",
+        matched_document_id: matched.documentId,
+        matched_excerpt: matched.line,
       });
     }
   }

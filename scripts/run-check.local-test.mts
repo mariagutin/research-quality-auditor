@@ -174,6 +174,85 @@ const T_DOC = "transcript-doc-id";
   check("J: farther-back attribution -> empty", res[0]?.listed_participant_id === null, JSON.stringify(res));
 }
 
+// Attribution verification -----------------------------------------------
+const TWO = [
+  { documentId: "t-p03", participantId: "P03", text: "" },
+  { documentId: "t-p05", participantId: "P05", text: "" },
+];
+
+// K: report names P03, quote is in P03's speech -> verified, no issue.
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P03 said, "verified quote."`,
+    transcripts: [
+      { ...TWO[0], text: "P03: verified quote.\n" },
+      { ...TWO[1], text: "P05: something else.\n" },
+    ],
+  });
+  const q = res[0];
+  check("K: verified -> no_issues", q?.checking_result === "no_issues", JSON.stringify(q));
+  check("K: matched P03's transcript", q?.matched_document_id === "t-p03", JSON.stringify(q));
+  check("K: no attribution issue", q?.issues === undefined, JSON.stringify(q));
+}
+// L: report names P03, quote only in P05's speech -> participant_mismatch + evidence.
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P03 said, "only p05 said this."`,
+    transcripts: [
+      { ...TWO[0], text: "P03: nothing relevant.\n" },
+      { ...TWO[1], text: "P05: only p05 said this.\n" },
+    ],
+  });
+  const q = res[0];
+  check("L: mismatch -> has_issues", q?.checking_result === "has_issues", JSON.stringify(q));
+  check("L: matched the ACTUAL speaker P05", q?.matched_document_id === "t-p05", JSON.stringify(q));
+  check("L: participant_mismatch issue", q?.issues?.[0]?.issue_type === "participant_mismatch", JSON.stringify(q));
+  check("L: issue source evidence set", q?.issues?.[0]?.source_document_id === "t-p05" && q?.issues?.[0]?.source_excerpt === "P05: only p05 said this.", JSON.stringify(q));
+}
+// M: no participant named, quote in P05's speech -> matched, NO attribution issue.
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `The report states: "shared wording here."`,
+    transcripts: [
+      { ...TWO[0], text: "P03: nothing.\n" },
+      { ...TWO[1], text: "P05: shared wording here.\n" },
+    ],
+  });
+  const q = res[0];
+  check("M: unattributed -> no_issues", q?.checking_result === "no_issues", JSON.stringify(q));
+  check("M: shows the source participant (P05)", q?.matched_document_id === "t-p05", JSON.stringify(q));
+  check("M: attribution empty, no issue", q?.listed_participant_id === null && q?.issues === undefined, JSON.stringify(q));
+}
+// N: same wording in BOTH; report names P03 -> prefers P03 (verified, not mismatch).
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P03 said, "both said this."`,
+    transcripts: [
+      { ...TWO[0], text: "P03: both said this.\n" },
+      { ...TWO[1], text: "P05: both said this.\n" },
+    ],
+  });
+  const q = res[0];
+  check("N: prefers named participant P03", q?.matched_document_id === "t-p03" && q?.checking_result === "no_issues", JSON.stringify(q));
+}
+// O: same wording in both; report names P05 -> prefers P05.
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P05 said, "both said this."`,
+    transcripts: [
+      { ...TWO[0], text: "P03: both said this.\n" },
+      { ...TWO[1], text: "P05: both said this.\n" },
+    ],
+  });
+  const q = res[0];
+  check("O: prefers named participant P05", q?.matched_document_id === "t-p05" && q?.checking_result === "no_issues", JSON.stringify(q));
+}
+
 // ---------------- Full run against the local stack ----------------
 async function integration() {
   const { url, anon, service } = resolveLocalConfig();
@@ -223,6 +302,42 @@ async function integration() {
     check("INT: persisted excerpt + attribution", q?.matched_excerpt === "P03: I loved how simple the setup was." && q?.listed_participant_id === "P03", JSON.stringify(q));
     const { data: rev } = await anna.from("reviews").select("processing_status").eq("id", reviewId).maybeSingle();
     check("INT: review marked complete", rev?.processing_status === "complete", JSON.stringify(rev));
+
+    // Mismatch scenario: report names P03, but the quote is in P05's speech.
+    const reviewId2 = randomUUID();
+    const rep2 = randomUUID();
+    const t03 = randomUUID();
+    const t05 = randomUUID();
+    const base2 = `${annaId}/${reviewId2}`;
+    await anna.from("reviews").insert({ id: reviewId2, user_id: annaId, name: "mismatch" });
+    await anna.from("documents").insert([
+      { id: rep2, review_id: reviewId2, user_id: annaId, role: "report", filename: "report.md", storage_path: `${base2}/report.md` },
+      { id: t03, review_id: reviewId2, user_id: annaId, role: "transcript", filename: "p03.md", storage_path: `${base2}/p03.md`, participant_id: "P03" },
+      { id: t05, review_id: reviewId2, user_id: annaId, role: "transcript", filename: "p05.md", storage_path: `${base2}/p05.md`, participant_id: "P05" },
+    ]);
+    await up(`${base2}/report.md`, `P03 said, "this was only said by p05."\n`);
+    await up(`${base2}/p03.md`, `P03: nothing relevant here.\n`);
+    await up(`${base2}/p05.md`, `P05: this was only said by p05.\n`);
+
+    const res2 = await runReviewCheck(anna, annaId, reviewId2);
+    check("INT2: mismatch run complete", res2.status === "complete", JSON.stringify(res2));
+    const { data: qs2 } = await anna
+      .from("quotations")
+      .select("checking_result, matched_document_id, listed_participant_id")
+      .eq("review_id", reviewId2);
+    const q2 = qs2?.[0];
+    check("INT2: has_issues + matched actual speaker P05", q2?.checking_result === "has_issues" && q2?.matched_document_id === t05, JSON.stringify(q2));
+    check("INT2: report attribution recorded as P03", q2?.listed_participant_id === "P03", JSON.stringify(q2));
+    const { data: iss2 } = await anna
+      .from("issues")
+      .select("issue_type, source_document_id, source_excerpt")
+      .eq("review_id", reviewId2);
+    const i2 = iss2?.[0];
+    check(
+      "INT2: participant_mismatch with source evidence",
+      i2?.issue_type === "participant_mismatch" && i2?.source_document_id === t05 && i2?.source_excerpt === "P05: this was only said by p05.",
+      JSON.stringify(i2),
+    );
   } finally {
     try { if (uploaded.length) await admin.storage.from(REVIEW_FILES_BUCKET).remove(uploaded); } catch (e) { console.error("cleanup storage:", (e as Error).message); }
     try { await admin.auth.admin.deleteUser(annaId); } catch (e) { console.error("cleanup user:", (e as Error).message); }

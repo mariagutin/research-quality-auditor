@@ -158,6 +158,51 @@ begin
 end $$;
 
 -- ===========================================================================
+-- 2b. A participant_mismatch records issue source evidence (transcript + excerpt),
+--     kept consistent with the quotation's matched_* evidence.
+-- ===========================================================================
+do $$
+declare v_ret integer; v_qid uuid; v_src uuid; v_exc text; v_type text; n int;
+begin
+  select public.record_quotation_results(
+    '00000000-0000-0000-0000-0000000000f1',
+    jsonb_build_array(
+      jsonb_build_object(
+        'report_document_id', '00000000-0000-0000-0000-0000000000d1',
+        'original_text', 'Attributed to the wrong person.',
+        'listed_participant_id', 'P05',
+        'start_offset', 0, 'end_offset', 31,
+        'checking_result', 'has_issues',
+        'matched_document_id', '00000000-0000-0000-0000-0000000000d2',
+        'matched_excerpt', 'P03: Attributed to the wrong person.',
+        'issues', jsonb_build_array(
+          jsonb_build_object(
+            'issue_type', 'participant_mismatch',
+            'explanation', 'Report attributes this quote to P05, but it was said by P03.',
+            'source_document_id', '00000000-0000-0000-0000-0000000000d2',
+            'source_excerpt', 'P03: Attributed to the wrong person.'
+          )
+        )
+      )
+    )
+  ) into v_ret;
+  if v_ret <> 1 then raise exception 'FAIL 2b: expected 1 recorded, got %', v_ret; end if;
+
+  select id into v_qid from public.quotations where review_id = '00000000-0000-0000-0000-0000000000f1';
+  select issue_type, source_document_id, source_excerpt into v_type, v_src, v_exc
+    from public.issues where quotation_id = v_qid;
+  if v_type <> 'participant_mismatch' then raise exception 'FAIL 2b: wrong issue type %', v_type; end if;
+  if v_src <> '00000000-0000-0000-0000-0000000000d2' then raise exception 'FAIL 2b: issue source_document_id not saved (got %)', v_src; end if;
+  if v_exc <> 'P03: Attributed to the wrong person.' then raise exception 'FAIL 2b: issue source_excerpt not saved (got %)', v_exc; end if;
+
+  select count(*) into n from public.quotations
+    where id = v_qid and matched_document_id = '00000000-0000-0000-0000-0000000000d2';
+  if n <> 1 then raise exception 'FAIL 2b: quotation matched_* inconsistent with issue'; end if;
+
+  raise notice 'PASS 2b: participant_mismatch saved issue source evidence, consistent with matched_*';
+end $$;
+
+-- ===========================================================================
 -- 3. Constraints + FK via direct inserts.
 -- ===========================================================================
 
