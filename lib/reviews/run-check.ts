@@ -13,8 +13,15 @@
 // user. Results are stored internally; nothing here is shown to the researcher.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { wordNorms, similarity, contiguousContains } from "./text-compare";
 
 export const REVIEW_FILES_BUCKET = "review-files";
+
+// A reworded passage counts as a "possible source" when its word overlap reaches
+// this score, and only for quotes of at least this many words (short quotes swing
+// the ratio too far). Provisional, under local evaluation (see ADR-0006).
+const NEAR_MATCH_THRESHOLD = 0.7;
+const NEAR_MATCH_MIN_WORDS = 4;
 
 export interface TranscriptInput {
   documentId: string;
@@ -151,23 +158,58 @@ export function analyzeReport(args: {
 }): QuotationResult[] {
   const { reportDocumentId, reportText, transcripts } = args;
   const confirmedIds = [...new Set(transcripts.map((t) => t.participantId).filter(Boolean))];
-  const perTranscript = transcripts.map((t) => ({
-    documentId: t.documentId,
-    participantId: t.participantId,
-    lines: participantLines(t.text, t.participantId),
-  }));
 
-  // First transcript in `list` with a participant line containing the quote.
-  function findIn(
-    list: typeof perTranscript,
-    needle: string,
-  ): { documentId: string; participantId: string; line: string } | null {
-    for (const t of list) {
-      const line = t.lines.find((l) => l.includes(needle));
-      if (line) return { documentId: t.documentId, participantId: t.participantId, line };
-    }
-    return null;
+  // Flat list of participant passages (Moderator excluded), each with the
+  // normalized words used for comparison, in a stable canonical order:
+  // participant id, then document id, then line position. That order is the
+  // documented tie-breaker when scores are equal.
+  interface Passage {
+    docId: string;
+    participantId: string;
+    lineIndex: number;
+    raw: string;
+    words: string[];
   }
+  const passages: Passage[] = [];
+  for (const t of transcripts) {
+    participantLines(t.text, t.participantId).forEach((raw, lineIndex) => {
+      const colon = raw.indexOf(":");
+      const spoken = colon >= 0 ? raw.slice(colon + 1).trim() : raw;
+      passages.push({ docId: t.documentId, participantId: t.participantId, lineIndex, raw, words: wordNorms(spoken) });
+    });
+  }
+  passages.sort((a, b) =>
+    a.participantId < b.participantId
+      ? -1
+      : a.participantId > b.participantId
+        ? 1
+        : a.docId < b.docId
+          ? -1
+          : a.docId > b.docId
+            ? 1
+            : a.lineIndex - b.lineIndex,
+  );
+
+  // The first exact passage (quote said verbatim, up to case/punctuation) among
+  // those matching `pred`, in canonical order.
+  const firstExact = (pred: (p: Passage) => boolean, needle: string[]): Passage | null =>
+    passages.find((p) => pred(p) && contiguousContains(p.words, needle)) ?? null;
+
+  // The highest-scoring near passage among those matching `pred`. Ties go to the
+  // earlier passage in canonical order (strict `>` keeps the first seen).
+  const bestNear = (pred: (p: Passage) => boolean, needle: string[]): Passage | null => {
+    let best: Passage | null = null;
+    let bestScore = 0;
+    for (const p of passages) {
+      if (!pred(p)) continue;
+      const score = similarity(needle, p.words);
+      if (score >= NEAR_MATCH_THRESHOLD && score > bestScore) {
+        best = p;
+        bestScore = score;
+      }
+    }
+    return best;
+  };
 
   const results: QuotationResult[] = [];
   const quote = /"([^"]*)"/g;
@@ -180,26 +222,7 @@ export function analyzeReport(args: {
     const start = codePointIndex(reportText, utf16Start);
     const end = codePointIndex(reportText, utf16Start + inner.length);
     const listed = detectAttribution(reportText, m.index, confirmedIds);
-
-    // Attribution-aware matching: prefer the participant the report names.
-    //   - found in that participant's speech  -> attribution verified
-    //   - found only in another's speech       -> participant_mismatch
-    //   - found nowhere                        -> quote_not_found
-    //   - no participant named                 -> any participant's speech, no flag
-    let matched: { documentId: string; participantId: string; line: string } | null = null;
-    let mismatch = false;
-    if (listed) {
-      matched = findIn(perTranscript.filter((t) => t.participantId === listed), inner);
-      if (!matched) {
-        const other = findIn(perTranscript.filter((t) => t.participantId !== listed), inner);
-        if (other) {
-          matched = other;
-          mismatch = true;
-        }
-      }
-    } else {
-      matched = findIn(perTranscript, inner);
-    }
+    const needle = wordNorms(inner);
 
     const base = {
       report_document_id: reportDocumentId,
@@ -209,43 +232,115 @@ export function analyzeReport(args: {
       end_offset: end,
     };
 
-    if (!matched) {
+    // 1. EXACT matches take priority across everyone; prefer the credited
+    //    participant when the report named one.
+    let exact: Passage | null = listed ? firstExact((p) => p.participantId === listed, needle) : null;
+    let exactMismatch = false;
+    if (!exact) {
+      const other = listed
+        ? firstExact((p) => p.participantId !== listed, needle)
+        : firstExact(() => true, needle);
+      if (other) {
+        exact = other;
+        exactMismatch = Boolean(listed);
+      }
+    }
+
+    if (exact && !exactMismatch) {
+      // Verbatim in the credited participant's speech (or no participant named).
+      results.push({ ...base, checking_result: "no_issues", matched_document_id: exact.docId, matched_excerpt: exact.raw });
+      continue;
+    }
+    if (exact && exactMismatch) {
+      // Said verbatim, but by someone other than the credited participant: we can
+      // state this plainly because the wording is an exact match.
       results.push({
         ...base,
         checking_result: "has_issues",
-        matched_document_id: null,
-        matched_excerpt: null,
-        issues: [
-          {
-            issue_type: "quote_not_found",
-            explanation: "Quote not found in any participant's transcript.",
-          },
-        ],
-      });
-    } else if (mismatch) {
-      results.push({
-        ...base,
-        checking_result: "has_issues",
-        matched_document_id: matched.documentId,
-        matched_excerpt: matched.line,
+        matched_document_id: exact.docId,
+        matched_excerpt: exact.raw,
         issues: [
           {
             issue_type: "participant_mismatch",
-            explanation: `Report attributes this quote to ${listed}, but it was said by ${matched.participantId}.`,
-            source_document_id: matched.documentId,
-            source_excerpt: matched.line,
+            explanation: `Report attributes this quote to ${listed}, but it was said by ${exact.participantId}.`,
+            source_document_id: exact.docId,
+            source_excerpt: exact.raw,
           },
         ],
       });
-    } else {
-      // Attribution verified, or an unattributed wording match: no attribution issue.
+      continue;
+    }
+
+    // 2. No exact match anywhere: look for a reworded "possible source". Only for
+    //    quotes of enough words; prefer the credited participant's best passage.
+    let near: Passage | null = null;
+    let nearMismatch = false;
+    if (needle.length >= NEAR_MATCH_MIN_WORDS) {
+      near = listed ? bestNear((p) => p.participantId === listed, needle) : null;
+      if (!near) {
+        const other = listed
+          ? bestNear((p) => p.participantId !== listed, needle)
+          : bestNear(() => true, needle);
+        if (other) {
+          near = other;
+          nearMismatch = Boolean(listed);
+        }
+      }
+    }
+
+    if (near && !nearMismatch) {
+      // Reworded, within the credited participant (or no participant named):
+      // a possible wording difference, no attribution claim.
       results.push({
         ...base,
-        checking_result: "no_issues",
-        matched_document_id: matched.documentId,
-        matched_excerpt: matched.line,
+        checking_result: "has_issues",
+        matched_document_id: near.docId,
+        matched_excerpt: near.raw,
+        issues: [
+          {
+            issue_type: "wording_mismatch",
+            explanation: `This quote is not word-for-word in ${near.participantId}'s transcript; the closest passage is shown as a possible source to review.`,
+            source_document_id: near.docId,
+            source_excerpt: near.raw,
+          },
+        ],
       });
+      continue;
     }
+    if (near && nearMismatch) {
+      // Reworded AND only near another participant: keep both labels, but word
+      // the attribution cautiously -- similarity does not prove who said it.
+      results.push({
+        ...base,
+        checking_result: "has_issues",
+        matched_document_id: near.docId,
+        matched_excerpt: near.raw,
+        issues: [
+          {
+            issue_type: "participant_mismatch",
+            explanation: `The report credits ${listed}; a possible source passage was found in ${near.participantId}'s transcript.`,
+            source_document_id: near.docId,
+            source_excerpt: near.raw,
+          },
+          {
+            issue_type: "wording_mismatch",
+            explanation: `This quote is not word-for-word; the closest passage is shown as a possible source to review.`,
+            source_document_id: near.docId,
+            source_excerpt: near.raw,
+          },
+        ],
+      });
+      continue;
+    }
+
+    // 3. Nothing matched, exactly or closely.
+    results.push({
+      ...base,
+      checking_result: "has_issues",
+      matched_document_id: null,
+      matched_excerpt: null,
+      issues: [{ issue_type: "quote_not_found", explanation: "Quote not found in any participant's transcript." }],
+    });
   }
   return results;
 }

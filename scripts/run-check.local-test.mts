@@ -270,6 +270,108 @@ const TWO = [
   check("P: participant_mismatch issue", q?.issues?.[0]?.issue_type === "participant_mismatch", JSON.stringify(q));
 }
 
+// ---------------- Near (reworded) matching ----------------
+
+// Q: reworded within the credited participant -> wording difference only.
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P03 said, "the dashboard saved me time."`,
+    transcripts: [{ documentId: "t-p03", participantId: "P03", text: "P03: the dashboard saved me a lot of time.\n" }],
+  });
+  const q = res[0];
+  check("Q: has_issues (no exact match)", q?.checking_result === "has_issues", JSON.stringify(q));
+  check("Q: matched the credited participant P03", q?.matched_document_id === "t-p03", JSON.stringify(q));
+  check("Q: single wording_mismatch, no participant issue", q?.issues?.length === 1 && q?.issues?.[0]?.issue_type === "wording_mismatch", JSON.stringify(q));
+}
+// R: reworded only in ANOTHER participant -> participant_mismatch + wording_mismatch.
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P03 said, "the dashboard saved me time."`,
+    transcripts: [
+      { documentId: "t-p03", participantId: "P03", text: "P03: nothing relevant here at all.\n" },
+      { documentId: "t-p05", participantId: "P05", text: "P05: the dashboard saved me a lot of time.\n" },
+    ],
+  });
+  const q = res[0];
+  check("R: matched the other participant P05", q?.matched_document_id === "t-p05", JSON.stringify(q));
+  const types = (q?.issues ?? []).map((i) => i.issue_type).sort();
+  check("R: BOTH labels kept", JSON.stringify(types) === JSON.stringify(["participant_mismatch", "wording_mismatch"]), JSON.stringify(q));
+  const pm = q?.issues?.find((i) => i.issue_type === "participant_mismatch");
+  check("R: cautious attribution wording (no 'said by')", !!pm && /possible source passage/.test(pm.explanation ?? "") && !/was said by/.test(pm.explanation ?? ""), JSON.stringify(pm));
+}
+// S: negation is a wording difference and IS surfaced (meaning aside).
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P05 said, "the tool was reliable."`,
+    transcripts: [{ documentId: "t-p05", participantId: "P05", text: "P05: honestly the tool was not reliable.\n" }],
+  });
+  const q = res[0];
+  check("S: negation flagged as wording difference", q?.checking_result === "has_issues" && q?.issues?.[0]?.issue_type === "wording_mismatch", JSON.stringify(q));
+}
+// T: a short reworded quote (< 4 words) is exact-only -> not flagged.
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P05 said, "it worked."`,
+    transcripts: [{ documentId: "t-p05", participantId: "P05", text: "P05: it failed.\n" }],
+  });
+  const q = res[0];
+  check("T: short reworded quote -> quote_not_found", q?.issues?.[0]?.issue_type === "quote_not_found", JSON.stringify(q));
+}
+// U1: high lexical overlap but different meaning (4 words) -> surfaced to review.
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P05 said, "it saved me time."`,
+    transcripts: [{ documentId: "t-p05", participantId: "P05", text: "P05: it saved me money.\n" }],
+  });
+  const q = res[0];
+  check("U1: 'time' vs 'money' (0.75) surfaced as possible wording difference", q?.issues?.[0]?.issue_type === "wording_mismatch", JSON.stringify(q));
+}
+// U2: the same swap at 3 words is below the minimum -> not flagged.
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `The report notes, "saved me time."`,
+    transcripts: [{ documentId: "t-p05", participantId: "P05", text: "P05: saved me money.\n" }],
+  });
+  const q = res[0];
+  check("U2: 3-word swap below minimum -> quote_not_found", q?.issues?.[0]?.issue_type === "quote_not_found", JSON.stringify(q));
+}
+// V: competing near candidates -> prefer the credited participant's passage,
+//    even when another participant scores higher.
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P03 said, "the dashboard saved me time."`,
+    transcripts: [
+      { documentId: "t-p03", participantId: "P03", text: "P03: the dashboard honestly saved me time anyway.\n" }, // ~0.83
+      { documentId: "t-p05", participantId: "P05", text: "P05: the dashboard really saved me time.\n" }, // ~0.91
+    ],
+  });
+  const q = res[0];
+  check("V: prefers credited P03 despite P05 scoring higher", q?.matched_document_id === "t-p03", JSON.stringify(q));
+  check("V: wording difference only (no participant issue)", q?.issues?.length === 1 && q?.issues?.[0]?.issue_type === "wording_mismatch", JSON.stringify(q));
+}
+// W: exact-match limitation -> an exact match in P05 takes priority over a near
+//    match in the credited P03, so the selected passage may not be the source.
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P03 said, "the dashboard saved me time."`,
+    transcripts: [
+      { documentId: "t-p03", participantId: "P03", text: "P03: the dashboard honestly saved me time anyway.\n" }, // near
+      { documentId: "t-p05", participantId: "P05", text: "P05: the dashboard saved me time.\n" }, // exact
+    ],
+  });
+  const q = res[0];
+  check("W: exact P05 wins over near P03", q?.matched_document_id === "t-p05", JSON.stringify(q));
+  check("W: single participant_mismatch, no wording issue", q?.issues?.length === 1 && q?.issues?.[0]?.issue_type === "participant_mismatch", JSON.stringify(q));
+}
+
 // ---------------- Full run against the local stack ----------------
 async function integration() {
   const { url, anon, service } = resolveLocalConfig();

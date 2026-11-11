@@ -18,6 +18,28 @@ import Alert from "@mui/material/Alert";
 import { createClient } from "@/lib/supabase/server";
 import RunCheckButton from "./run-check-button";
 import { buildIssuesView } from "@/lib/reviews/issues-view";
+import type { DiffSeg } from "@/lib/reviews/text-compare";
+
+// A passage rendered verbatim, with differing words highlighted.
+function HighlightedPassage({ segments }: { segments: DiffSeg[] }) {
+  return (
+    <Typography variant="body2" component="p" sx={{ fontFamily: "monospace", whiteSpace: "pre-wrap", m: 0 }}>
+      {segments.map((seg, i) =>
+        seg.changed ? (
+          <Box
+            key={i}
+            component="span"
+            sx={{ bgcolor: "warning.light", color: "warning.contrastText", fontWeight: 700, borderRadius: 0.5, px: 0.25 }}
+          >
+            {seg.text}
+          </Box>
+        ) : (
+          <span key={i}>{seg.text}</span>
+        ),
+      )}
+    </Typography>
+  );
+}
 
 export default async function ReviewPage({
   params,
@@ -65,7 +87,7 @@ export default async function ReviewPage({
     issuesView = buildIssuesView({
       quotations: quotations ?? [],
       issues: issues ?? [],
-      documents: (documents ?? []).map((d) => ({ id: d.id, filename: d.filename })),
+      documents: (documents ?? []).map((d) => ({ id: d.id, filename: d.filename, participantId: d.participant_id })),
     });
   }
 
@@ -104,60 +126,74 @@ export default async function ReviewPage({
               Results
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              {`Checked ${issuesView.totalChecked} quotation${
-                issuesView.totalChecked === 1 ? "" : "s"
-              } · ${issuesView.totalWithIssues} with issue${
-                issuesView.totalWithIssues === 1 ? "" : "s"
-              }`}
+              {`Checked ${issuesView.quotationsChecked} quotation${
+                issuesView.quotationsChecked === 1 ? "" : "s"
+              } · ${issuesView.totalIssues} issue${
+                issuesView.totalIssues === 1 ? "" : "s"
+              } found`}
             </Typography>
 
-            {issuesView.items.length === 0 ? (
+            {issuesView.entries.length === 0 ? (
               <Alert severity="success" role="status">
                 No issues found. Every quotation matched a participant&apos;s transcript.
               </Alert>
             ) : (
-              <Stack spacing={2} component="ol" sx={{ listStyle: "none", m: 0, p: 0 }}>
-                {issuesView.items.map((item) => (
-                  <Box key={item.quotationId} component="li">
+              <Stack spacing={2.5} component="ol" sx={{ listStyle: "none", m: 0, p: 0 }}>
+                {issuesView.entries.map((entry) => (
+                  <Box key={`${entry.quotationId}-${entry.issueIndex}`} component="li">
+                    {entry.issueCount > 1 && (
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25 }}>
+                        Issue {entry.issueIndex} of {entry.issueCount} for this quotation
+                      </Typography>
+                    )}
                     <Typography variant="body1" sx={{ fontStyle: "italic" }}>
-                      &ldquo;{item.quote}&rdquo;
+                      &ldquo;{entry.quote}&rdquo;
                     </Typography>
-                    {item.issues.map((issue, i) => (
-                      <Stack key={i} spacing={0.5} sx={{ mt: 0.75 }}>
-                        <Box>
-                          <Chip
-                            label={issue.label}
-                            size="small"
-                            color={
-                              issue.type === "participant_mismatch" ? "warning" : "default"
-                            }
-                          />
-                        </Box>
-                        {issue.explanation && (
-                          <Typography variant="body2">{issue.explanation}</Typography>
-                        )}
-                        {issue.evidence && (
-                          <Box
-                            sx={{
-                              bgcolor: "action.hover",
-                              borderRadius: 1,
-                              px: 1.5,
-                              py: 1,
-                            }}
-                          >
-                            <Typography variant="caption" color="text.secondary">
-                              {issue.evidence.filename}
-                            </Typography>
-                            <Typography
-                              variant="body2"
-                              sx={{ fontFamily: "monospace", whiteSpace: "pre-wrap" }}
-                            >
-                              {issue.evidence.excerpt}
-                            </Typography>
-                          </Box>
-                        )}
-                      </Stack>
-                    ))}
+
+                    <Box sx={{ mt: 0.75 }}>
+                      <Chip
+                        label={entry.label.label}
+                        size="small"
+                        color={
+                          entry.label.kind === "participant_mismatch"
+                            ? "warning"
+                            : entry.label.kind === "wording_mismatch"
+                              ? "info"
+                              : "default"
+                        }
+                      />
+                    </Box>
+
+                    {entry.note && (
+                      <Typography variant="body2" sx={{ mt: 0.5 }}>
+                        {entry.note}
+                      </Typography>
+                    )}
+
+                    {entry.evidence?.kind === "plain" && (
+                      <Box sx={{ mt: 1, bgcolor: "action.hover", borderRadius: 1, px: 1.5, py: 1 }}>
+                        <Typography variant="caption" color="text.secondary">
+                          {entry.evidence.filename}
+                        </Typography>
+                        <Typography variant="body2" sx={{ fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
+                          {entry.evidence.excerpt}
+                        </Typography>
+                      </Box>
+                    )}
+
+                    {entry.evidence?.kind === "diff" && (
+                      <Box sx={{ mt: 1, bgcolor: "action.hover", borderRadius: 1, px: 1.5, py: 1 }}>
+                        <Typography variant="caption" color="text.secondary">
+                          Report
+                        </Typography>
+                        <HighlightedPassage segments={entry.evidence.report} />
+                        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                          {entry.evidence.filename}
+                          {entry.evidence.participantId ? ` · ${entry.evidence.participantId}` : ""} · verbatim
+                        </Typography>
+                        <HighlightedPassage segments={entry.evidence.transcript} />
+                      </Box>
+                    )}
                   </Box>
                 ))}
               </Stack>
