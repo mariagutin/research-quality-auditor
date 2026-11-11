@@ -99,6 +99,22 @@ The owner-only RLS, the `create_review_with_documents` function, and the Storage
 bucket policies have synthetic SQL tests under `supabase/tests/`. See
 `supabase/tests/README.md` for how to run each one against the local stack.
 
+## TypeScript integration test (quotation check)
+
+The quotation check logic (`lib/reviews/run-check.ts`) has a reusable local test
+that runs the pure analysis on synthetic text and then a full `runReviewCheck`
+against the local stack (it creates a synthetic user, uploads synthetic files,
+runs the check, asserts the saved rows, and cleans up). From the repo root:
+
+```sh
+npx tsx scripts/run-check.local-test.mts
+```
+
+It auto-resolves the local keys from `npx supabase status` (or set
+`SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` yourself).
+Prereqs: Docker + `npx supabase start`, with migrations applied. A clean run
+prints `PASS` lines and ends with `ALL CHECKS PASSED` (exit 0). **Local only.**
+
 ## Go back to hosted
 
 ```sh

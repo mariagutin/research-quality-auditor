@@ -13,6 +13,7 @@ import {
   type FinishSaveInput,
   type FinishSaveResult,
 } from "@/lib/reviews/finish-save";
+import { runReviewCheck, type RunCheckResult } from "@/lib/reviews/run-check";
 
 export async function finishSaveAction(
   input: FinishSaveInput,
@@ -25,4 +26,17 @@ export async function finishSaveAction(
     return { status: "invalid", message: "You must be signed in to save a review." };
   }
   return finishReviewSave(supabase, user.id, input);
+}
+
+// Runs the quotation check for a review. Results + evidence are saved internally;
+// only a completion/error status comes back to the browser.
+export async function runCheckAction(reviewId: string): Promise<RunCheckResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return { status: "error", message: "You must be signed in to run a check." };
+  }
+  return runReviewCheck(supabase, user.id, reviewId);
 }

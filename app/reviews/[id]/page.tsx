@@ -13,6 +13,7 @@ import ListItem from "@mui/material/ListItem";
 import ListItemText from "@mui/material/ListItemText";
 import Button from "@mui/material/Button";
 import { createClient } from "@/lib/supabase/server";
+import RunCheckButton from "./run-check-button";
 
 export default async function ReviewPage({
   params,
@@ -51,7 +52,13 @@ export default async function ReviewPage({
             {review.name}
           </Typography>
           <Chip
-            label={isPreCheck ? "Saved · pre-check" : review.processing_status}
+            label={
+              isPreCheck
+                ? "Saved · pre-check"
+                : review.processing_status === "complete"
+                  ? "Checked"
+                  : review.processing_status
+            }
             color={isPreCheck ? "default" : "primary"}
             size="small"
           />
@@ -59,9 +66,11 @@ export default async function ReviewPage({
 
         {isPreCheck && (
           <Typography variant="body2" color="text.secondary">
-            Saved. The quotation check hasn&apos;t run yet — that comes in a later step.
+            Saved. Run the quotation check below.
           </Typography>
         )}
+
+        <RunCheckButton reviewId={id} status={review.processing_status} />
 
         <Typography variant="h6" component="h2">
           Files in this check
