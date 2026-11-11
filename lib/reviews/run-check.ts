@@ -56,9 +56,29 @@ function codePointIndex(text: string, utf16Index: number): number {
   return Array.from(text.slice(0, utf16Index)).length;
 }
 
-// The confirmed id clearly attributes the quote when it sits in the speaker role
-// in the clause just before the quote. Mere co-occurrence does not count, and two
+// The id clearly attributes the quote when it sits in the speaker role in the
+// clause just before the quote. Mere co-occurrence does not count, and two
 // different attributing ids are ambiguous -> empty.
+//
+// The credited id may be a participant WITHOUT an uploaded transcript -- e.g. the
+// report credits P03 but only P05's interview was provided. That credit is still
+// detected (by its participant-id shape), so the quote can be flagged as a
+// participant mismatch rather than silently passing as "no issues".
+const ATTRIBUTION_VERBS =
+  "said|says|noted|notes|explained|explains|reported|reports|told|adds|added|recalled|remarked|observed|wrote|writes";
+
+// The four speaker forms, built around a given id sub-pattern. The colon form is
+// case-sensitive (a literal label); the others allow a capitalized sentence start.
+function attributionPatterns(idPat: string, flags: string): RegExp[] {
+  const i = flags.includes("i") ? flags : flags + "i";
+  return [
+    new RegExp(`\\b${idPat}\\s*:\\s*$`, flags), // "P03:" directly before the quote
+    new RegExp(`\\b${idPat}\\s+(?:${ATTRIBUTION_VERBS})\\b`, i),
+    new RegExp(`\\b${idPat}\\s+put\\s+it\\b`, i), // "as P03 put it"
+    new RegExp(`\\baccording\\s+to\\s+${idPat}\\b`, i),
+  ];
+}
+
 function detectAttribution(
   reportText: string,
   quoteUtf16Start: number,
@@ -88,19 +108,25 @@ function detectAttribution(
   }
 
   const hits = new Set<string>();
+
+  // 1. Confirmed participant ids, matched exactly -- so an id of ANY shape
+  //    (including one that is not "P12"-style) is still recognized as a speaker.
   for (const id of confirmedIds) {
-    const e = escapeRegExp(id);
-    const patterns = [
-      new RegExp(`\\b${e}\\s*:\\s*$`), // "P03:" directly before the quote
-      new RegExp(
-        `\\b${e}\\s+(said|says|noted|notes|explained|explains|reported|reports|told|adds|added|recalled|remarked|observed|wrote|writes)\\b`,
-        "i",
-      ),
-      new RegExp(`\\b${e}\\s+put\\s+it\\b`, "i"), // "as P03 put it"
-      new RegExp(`\\baccording\\s+to\\s+${e}\\b`, "i"),
-    ];
-    if (patterns.some((p) => p.test(windowText))) hits.add(id);
+    if (attributionPatterns(escapeRegExp(id), "").some((p) => p.test(windowText))) hits.add(id);
   }
+
+  // 2. A participant-id-shaped token (letters then digits, e.g. P03) in the
+  //    speaker slot -- so a credit to a participant with NO uploaded transcript
+  //    is detected too. Fold onto a confirmed id that differs only in case.
+  const ID = "([A-Za-z]+[-_]?\\d+)";
+  for (const p of attributionPatterns(ID, "g")) {
+    for (const m of windowText.matchAll(p)) {
+      const token = m[1];
+      const canon = confirmedIds.find((c) => c.toLowerCase() === token.toLowerCase());
+      hits.add(canon ?? token);
+    }
+  }
+
   return hits.size === 1 ? [...hits][0] : null;
 }
 

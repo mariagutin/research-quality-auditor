@@ -252,6 +252,23 @@ const TWO = [
   const q = res[0];
   check("O: prefers named participant P05", q?.matched_document_id === "t-p05" && q?.checking_result === "no_issues", JSON.stringify(q));
 }
+// P: report credits P03, but ONLY P05's transcript was uploaded (no P03 file).
+//    The credit must still be detected and flagged as a participant mismatch,
+//    not silently passed as "no issues". (Regression for the mm-report finding.)
+{
+  const res = analyzeReport({
+    reportDocumentId: "rd",
+    reportText: `P03 said, "the dashboard saved me time."`,
+    transcripts: [
+      { documentId: "t-p05", participantId: "P05", text: "P05: the dashboard saved me time.\n" },
+    ],
+  });
+  const q = res[0];
+  check("P: credit to transcript-less P03 detected", q?.listed_participant_id === "P03", JSON.stringify(q));
+  check("P: flagged has_issues", q?.checking_result === "has_issues", JSON.stringify(q));
+  check("P: matched the ACTUAL speaker P05", q?.matched_document_id === "t-p05", JSON.stringify(q));
+  check("P: participant_mismatch issue", q?.issues?.[0]?.issue_type === "participant_mismatch", JSON.stringify(q));
+}
 
 // ---------------- Full run against the local stack ----------------
 async function integration() {
@@ -338,6 +355,35 @@ async function integration() {
       i2?.issue_type === "participant_mismatch" && i2?.source_document_id === t05 && i2?.source_excerpt === "P05: this was only said by p05.",
       JSON.stringify(i2),
     );
+
+    // Credited participant has NO uploaded transcript (mm-report scenario):
+    // report credits P03, only P05's file is present -> still a participant mismatch.
+    const reviewId3 = randomUUID();
+    const rep3 = randomUUID();
+    const t05b = randomUUID();
+    const base3 = `${annaId}/${reviewId3}`;
+    await anna.from("reviews").insert({ id: reviewId3, user_id: annaId, name: "no-p03-file" });
+    await anna.from("documents").insert([
+      { id: rep3, review_id: reviewId3, user_id: annaId, role: "report", filename: "report.md", storage_path: `${base3}/report.md` },
+      { id: t05b, review_id: reviewId3, user_id: annaId, role: "transcript", filename: "p05.md", storage_path: `${base3}/p05.md`, participant_id: "P05" },
+    ]);
+    await up(`${base3}/report.md`, `P03 said, "the dashboard saved me time."\n`);
+    await up(`${base3}/p05.md`, `P05: the dashboard saved me time.\n`);
+
+    const res3 = await runReviewCheck(anna, annaId, reviewId3);
+    check("INT3: run complete", res3.status === "complete", JSON.stringify(res3));
+    const { data: qs3 } = await anna
+      .from("quotations")
+      .select("checking_result, matched_document_id, listed_participant_id")
+      .eq("review_id", reviewId3);
+    const q3 = qs3?.[0];
+    check(
+      "INT3: transcript-less P03 credit -> has_issues + matched actual speaker P05",
+      q3?.checking_result === "has_issues" && q3?.matched_document_id === t05b && q3?.listed_participant_id === "P03",
+      JSON.stringify(q3),
+    );
+    const { data: iss3 } = await anna.from("issues").select("issue_type").eq("review_id", reviewId3);
+    check("INT3: participant_mismatch issue", iss3?.[0]?.issue_type === "participant_mismatch", JSON.stringify(iss3));
   } finally {
     try { if (uploaded.length) await admin.storage.from(REVIEW_FILES_BUCKET).remove(uploaded); } catch (e) { console.error("cleanup storage:", (e as Error).message); }
     try { await admin.auth.admin.deleteUser(annaId); } catch (e) { console.error("cleanup user:", (e as Error).message); }
