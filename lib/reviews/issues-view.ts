@@ -7,6 +7,7 @@
 // rows already belong to that researcher.
 
 import { diffSegments, type DiffSeg } from "./text-compare";
+import type { DecisionValue } from "./decisions";
 
 export interface QuotationRow {
   id: string;
@@ -17,11 +18,17 @@ export interface QuotationRow {
 }
 
 export interface IssueRow {
+  id: string;
   quotation_id: string;
   issue_type: string;
   explanation: string | null;
   source_document_id: string | null;
   source_excerpt: string | null;
+}
+
+export interface DecisionRow {
+  issue_id: string;
+  decision: DecisionValue;
 }
 
 export interface DocumentRow {
@@ -51,6 +58,7 @@ export type Evidence =
 // together, each self-contained (quotation, one label, its explanation, its own
 // evidence) and tagged "Issue N of M" so the shared quotation is clear.
 export interface IssueEntry {
+  issueId: string;
   quotationId: string;
   quote: string;
   // The participant the report credited, when it named one.
@@ -60,11 +68,13 @@ export interface IssueEntry {
   evidence: Evidence | null;
   issueIndex: number; // 1-based position within this quotation's issues
   issueCount: number; // total issues on this quotation
+  decision: DecisionValue | null; // the researcher's saved decision, if any
 }
 
 export interface IssuesView {
   quotationsChecked: number;
   totalIssues: number; // each issue counted separately, incl. several on one quotation
+  reviewedCount: number; // issues with a saved decision
   entries: IssueEntry[];
 }
 
@@ -102,11 +112,13 @@ export function buildIssuesView(args: {
   quotations: QuotationRow[];
   issues: IssueRow[];
   documents: DocumentRow[];
+  decisions?: DecisionRow[];
 }): IssuesView {
-  const { quotations, issues, documents } = args;
+  const { quotations, issues, documents, decisions = [] } = args;
 
   const filenameById = new Map(documents.map((d) => [d.id, d.filename]));
   const participantById = new Map(documents.map((d) => [d.id, d.participantId ?? null]));
+  const decisionByIssue = new Map(decisions.map((d) => [d.issue_id, d.decision]));
   const issuesByQuotation = new Map<string, IssueRow[]>();
   for (const issue of issues) {
     const list = issuesByQuotation.get(issue.quotation_id) ?? [];
@@ -133,11 +145,15 @@ export function buildIssuesView(args: {
 
   const entries: IssueEntry[] = [];
   let totalIssues = 0;
+  let reviewedCount = 0;
   for (const q of withIssues) {
     const qIssues = issuesByQuotation.get(q.id) ?? [];
     totalIssues += qIssues.length;
     qIssues.forEach((issue, idx) => {
+      const decision = decisionByIssue.get(issue.id) ?? null;
+      if (decision) reviewedCount += 1;
       entries.push({
+        issueId: issue.id,
         quotationId: q.id,
         quote: q.original_text,
         reportCredits: q.listed_participant_id,
@@ -146,6 +162,7 @@ export function buildIssuesView(args: {
         evidence: evidenceFor(q.original_text, issue),
         issueIndex: idx + 1,
         issueCount: qIssues.length,
+        decision,
       });
     });
   }
@@ -153,6 +170,7 @@ export function buildIssuesView(args: {
   return {
     quotationsChecked: quotations.length,
     totalIssues,
+    reviewedCount,
     entries,
   };
 }

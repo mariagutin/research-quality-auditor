@@ -1,8 +1,8 @@
 "use client";
 
-// Run check button for a saved review. Calls the server action, shows progress,
-// and on success shows "Check complete." Match results and evidence are stored
-// internally and are deliberately NOT shown here.
+// Run check button for a saved review. The check runs ONCE, from the pre-check
+// state; there is no "Run again" after completion (the page only renders this
+// button before the check). Results are stored internally and shown by the page.
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
@@ -12,18 +12,10 @@ import Alert from "@mui/material/Alert";
 import { runCheckAction } from "../actions";
 import type { RunCheckResult } from "@/lib/reviews/run-check";
 
-export default function RunCheckButton({
-  reviewId,
-  status,
-}: {
-  reviewId: string;
-  status: string;
-}) {
+export default function RunCheckButton({ reviewId }: { reviewId: string }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [result, setResult] = useState<RunCheckResult | null>(null);
-
-  const alreadyChecked = status === "complete";
 
   function onRun() {
     setResult(null);
@@ -44,7 +36,7 @@ export default function RunCheckButton({
         disabled={pending}
         sx={{ alignSelf: "flex-start" }}
       >
-        {pending ? "Running…" : alreadyChecked ? "Run again" : "Run check"}
+        {pending ? "Running…" : "Run check"}
       </Button>
       {result?.status === "complete" && (
         <Alert severity="success" role="status">

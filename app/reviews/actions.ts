@@ -14,6 +14,7 @@ import {
   type FinishSaveResult,
 } from "@/lib/reviews/finish-save";
 import { runReviewCheck, type RunCheckResult } from "@/lib/reviews/run-check";
+import { setDecision, type DecisionValue, type SetDecisionResult } from "@/lib/reviews/decisions";
 
 export async function finishSaveAction(
   input: FinishSaveInput,
@@ -39,4 +40,20 @@ export async function runCheckAction(reviewId: string): Promise<RunCheckResult> 
     return { status: "error", message: "You must be signed in to run a check." };
   }
   return runReviewCheck(supabase, user.id, reviewId);
+}
+
+// Records the researcher's decision for one issue (set or switched among the
+// three values). Runs AS the signed-in user; owner-only RLS applies.
+export async function setDecisionAction(
+  issueId: string,
+  decision: DecisionValue,
+): Promise<SetDecisionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return { status: "error", message: "You must be signed in to record a decision." };
+  }
+  return setDecision(supabase, user.id, issueId, decision);
 }

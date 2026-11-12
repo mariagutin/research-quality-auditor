@@ -30,18 +30,39 @@ const quotations: QuotationRow[] = [
 ];
 
 const issues: IssueRow[] = [
-  { quotation_id: "q-combined", issue_type: "participant_mismatch", explanation: "The report credits P03; a possible source passage was found in P05's transcript.", source_document_id: "doc-p05", source_excerpt: "P05: the dashboard saved me a lot of time." },
-  { quotation_id: "q-combined", issue_type: "wording_mismatch", explanation: "This quote is not word-for-word; the closest passage is shown as a possible source to review.", source_document_id: "doc-p05", source_excerpt: "P05: the dashboard saved me a lot of time." },
-  { quotation_id: "q-mismatch", issue_type: "participant_mismatch", explanation: "Report attributes this quote to P03, but it was said by P05.", source_document_id: "doc-p05", source_excerpt: "P05: exact words here." },
-  { quotation_id: "q-wording", issue_type: "wording_mismatch", explanation: "This quote is not word-for-word in P05's transcript; the closest passage is shown as a possible source to review.", source_document_id: "doc-p05", source_excerpt: "P05: it saved me money." },
-  { quotation_id: "q-missing", issue_type: "quote_not_found", explanation: "Quote not found in any participant's transcript.", source_document_id: null, source_excerpt: null },
+  { id: "i-cb-pm", quotation_id: "q-combined", issue_type: "participant_mismatch", explanation: "The report credits P03; a possible source passage was found in P05's transcript.", source_document_id: "doc-p05", source_excerpt: "P05: the dashboard saved me a lot of time." },
+  { id: "i-cb-wd", quotation_id: "q-combined", issue_type: "wording_mismatch", explanation: "This quote is not word-for-word; the closest passage is shown as a possible source to review.", source_document_id: "doc-p05", source_excerpt: "P05: the dashboard saved me a lot of time." },
+  { id: "i-mm", quotation_id: "q-mismatch", issue_type: "participant_mismatch", explanation: "Report attributes this quote to P03, but it was said by P05.", source_document_id: "doc-p05", source_excerpt: "P05: exact words here." },
+  { id: "i-wd", quotation_id: "q-wording", issue_type: "wording_mismatch", explanation: "This quote is not word-for-word in P05's transcript; the closest passage is shown as a possible source to review.", source_document_id: "doc-p05", source_excerpt: "P05: it saved me money." },
+  { id: "i-missing", quotation_id: "q-missing", issue_type: "quote_not_found", explanation: "Quote not found in any participant's transcript.", source_document_id: null, source_excerpt: null },
 ];
 
-const view = buildIssuesView({ quotations, issues, documents });
+// Two of the five issues have a saved decision.
+const decisions = [
+  { issue_id: "i-cb-pm", decision: "needs_correction" as const },
+  { issue_id: "i-wd", decision: "dismiss" as const },
+];
 
-// Summary: five quotations checked, each issue counted separately (2+1+1+1 = 5).
+const view = buildIssuesView({ quotations, issues, documents, decisions });
+
+// Summary: five quotations checked, each issue counted separately (2+1+1+1 = 5),
+// two of them reviewed.
 assert.equal(view.quotationsChecked, 5, "quotationsChecked");
 assert.equal(view.totalIssues, 5, "totalIssues");
+assert.equal(view.reviewedCount, 2, "reviewedCount");
+
+// Each entry carries its own issue id and decision.
+assert.deepEqual(
+  view.entries.map((e) => [e.issueId, e.decision]),
+  [
+    ["i-cb-pm", "needs_correction"],
+    ["i-cb-wd", null],
+    ["i-mm", null],
+    ["i-wd", "dismiss"],
+    ["i-missing", null],
+  ],
+  "per-entry issue id + decision",
+);
 
 // One entry per issue, in report order (10, 10, 50, 90, 120), same-quotation
 // entries together; the no_issues quote is absent.

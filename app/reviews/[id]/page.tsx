@@ -17,8 +17,9 @@ import Divider from "@mui/material/Divider";
 import Alert from "@mui/material/Alert";
 import { createClient } from "@/lib/supabase/server";
 import RunCheckButton from "./run-check-button";
-import { buildIssuesView } from "@/lib/reviews/issues-view";
+import { buildIssuesView, type DecisionRow } from "@/lib/reviews/issues-view";
 import type { DiffSeg } from "@/lib/reviews/text-compare";
+import DecisionControl from "./decision-control";
 
 // A passage rendered verbatim, with differing words highlighted.
 function HighlightedPassage({ segments }: { segments: DiffSeg[] }) {
@@ -81,15 +82,21 @@ export default async function ReviewPage({
         .eq("review_id", id),
       supabase
         .from("issues")
-        .select("quotation_id, issue_type, explanation, source_document_id, source_excerpt")
+        .select("id, quotation_id, issue_type, explanation, source_document_id, source_excerpt")
         .eq("review_id", id),
     ]);
+    const issueIds = (issues ?? []).map((i) => i.id);
+    const { data: decisions } = issueIds.length
+      ? await supabase.from("review_decisions").select("issue_id, decision").in("issue_id", issueIds)
+      : { data: [] };
     issuesView = buildIssuesView({
       quotations: quotations ?? [],
       issues: issues ?? [],
       documents: (documents ?? []).map((d) => ({ id: d.id, filename: d.filename, participantId: d.participant_id })),
+      decisions: (decisions ?? []) as DecisionRow[],
     });
   }
+
 
   return (
     <Box sx={{ maxWidth: 640, mx: "auto", p: 3 }}>
@@ -117,7 +124,9 @@ export default async function ReviewPage({
           </Typography>
         )}
 
-        <RunCheckButton reviewId={id} status={review.processing_status} />
+        {/* The check runs once, from the pre-check state. There is no "Run again"
+            after completion, so reviewing never regenerates issues or decisions. */}
+        {!isChecked && <RunCheckButton reviewId={id} />}
 
         {issuesView && (
           <>
@@ -132,6 +141,14 @@ export default async function ReviewPage({
                 issuesView.totalIssues === 1 ? "" : "s"
               } found`}
             </Typography>
+
+            {issuesView.totalIssues > 0 && (
+              <Typography variant="body2" color="text.secondary">
+                {issuesView.reviewedCount === issuesView.totalIssues
+                  ? `All ${issuesView.totalIssues} issue${issuesView.totalIssues === 1 ? "" : "s"} reviewed. Your decisions are saved.`
+                  : `${issuesView.reviewedCount} of ${issuesView.totalIssues} issue${issuesView.totalIssues === 1 ? "" : "s"} reviewed`}
+              </Typography>
+            )}
 
             {issuesView.entries.length === 0 ? (
               <Alert severity="success" role="status">
@@ -194,6 +211,8 @@ export default async function ReviewPage({
                         <HighlightedPassage segments={entry.evidence.transcript} />
                       </Box>
                     )}
+
+                    <DecisionControl issueId={entry.issueId} decision={entry.decision} />
                   </Box>
                 ))}
               </Stack>
