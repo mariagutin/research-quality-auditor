@@ -1,5 +1,6 @@
 import Container from "@mui/material/Container";
 import Box from "@mui/material/Box";
+import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import Button from "@mui/material/Button";
 import Alert from "@mui/material/Alert";
@@ -47,16 +48,16 @@ export default async function HomePage({
               Signed in as <strong>{user.email}</strong>.
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Quotation checking comes in a later step.
+              Upload a report and its transcripts to check whether its quotations match.
             </Typography>
-            <Button
-              component={Link}
-              href="/reviews/new"
-              variant="contained"
-              sx={{ alignSelf: "flex-start" }}
-            >
-              Start a new check
-            </Button>
+            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+              <Button component={Link} href="/reviews/new" variant="contained">
+                Start a new check
+              </Button>
+              <Button component={Link} href="/reviews" variant="outlined">
+                View your checks
+              </Button>
+            </Stack>
             <Box component="form" action={signout}>
               <Button type="submit" variant="outlined">
                 Sign out
