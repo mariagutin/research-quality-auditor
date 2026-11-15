@@ -49,6 +49,24 @@ insert into public.documents (id, review_id, user_id, role, filename, storage_pa
 
 do $$ begin raise notice 'SETUP: user, 2 reviews, report+transcript (R1), transcript (R2)'; end $$;
 
+-- record_quotation_results is now FENCED (migration 20261112000000): it requires
+-- the review to be `processing` under a matching op_token. This helper arms the
+-- review as processing under a fresh token and calls the function with it, so the
+-- existing happy-path sections below read unchanged. (Section 2c checks the fence.)
+create function pg_temp.rqr(p_review uuid, p_results jsonb)
+returns integer
+language plpgsql
+as $$
+declare v_tok uuid := gen_random_uuid(); v_ret integer;
+begin
+  update public.reviews
+     set processing_status = 'processing', op_token = v_tok,
+         op_heartbeat_at = now(), op_failed_at = null
+   where id = p_review;
+  select public.record_quotation_results(p_review, p_results, v_tok) into v_ret;
+  return v_ret;
+end $$;
+
 -- ===========================================================================
 -- 1. Recording: one wording-matched quote + one unmatched quote.
 -- ===========================================================================
@@ -62,7 +80,7 @@ declare
   pid text;
   n int;
 begin
-  select public.record_quotation_results(
+  select pg_temp.rqr(
     '00000000-0000-0000-0000-0000000000f1',
     jsonb_build_array(
       jsonb_build_object(
@@ -133,7 +151,7 @@ end $$;
 do $$
 declare v_ret integer; n int;
 begin
-  select public.record_quotation_results(
+  select pg_temp.rqr(
     '00000000-0000-0000-0000-0000000000f1',
     jsonb_build_array(
       jsonb_build_object(
@@ -164,7 +182,7 @@ end $$;
 do $$
 declare v_ret integer; v_qid uuid; v_src uuid; v_exc text; v_type text; n int;
 begin
-  select public.record_quotation_results(
+  select pg_temp.rqr(
     '00000000-0000-0000-0000-0000000000f1',
     jsonb_build_array(
       jsonb_build_object(
@@ -200,6 +218,37 @@ begin
   if n <> 1 then raise exception 'FAIL 2b: quotation matched_* inconsistent with issue'; end if;
 
   raise notice 'PASS 2b: participant_mismatch saved issue source evidence, consistent with matched_*';
+end $$;
+
+-- ===========================================================================
+-- 2c. Lease fence: a results call with the WRONG op_token (a superseded or
+--     reclaimed check) is refused and writes nothing; the review stays processing.
+-- ===========================================================================
+do $$
+declare v_tok uuid := gen_random_uuid(); v_bad uuid := gen_random_uuid(); v_raised boolean := false;
+begin
+  update public.reviews
+     set processing_status = 'processing', op_token = v_tok,
+         op_heartbeat_at = now(), op_failed_at = null
+   where id = '00000000-0000-0000-0000-0000000000f1';
+
+  begin
+    perform public.record_quotation_results(
+      '00000000-0000-0000-0000-0000000000f1', '[]'::jsonb, v_bad);
+  exception when others then
+    if sqlstate = 'P0001' then v_raised := true; else raise; end if;
+  end;
+  if not v_raised then raise exception 'FAIL 2c: wrong-token results call was not refused'; end if;
+
+  if (select processing_status from public.reviews
+        where id = '00000000-0000-0000-0000-0000000000f1') <> 'processing' then
+    raise exception 'FAIL 2c: a refused (fenced) call changed the review status';
+  end if;
+
+  -- Settle the review back to complete with the correct token for later sections.
+  perform public.record_quotation_results(
+    '00000000-0000-0000-0000-0000000000f1', '[]'::jsonb, v_tok);
+  raise notice 'PASS 2c: wrong-token results call refused by the lease fence; status unchanged';
 end $$;
 
 -- ===========================================================================

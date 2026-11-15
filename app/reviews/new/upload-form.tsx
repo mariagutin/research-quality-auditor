@@ -13,7 +13,7 @@
 //     fresh -- which is what replacing a rejected file does.
 //   - Selections always stay on screen; only success navigates away.
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Box from "@mui/material/Box";
 import Stack from "@mui/material/Stack";
@@ -27,12 +27,20 @@ import Divider from "@mui/material/Divider";
 import IconButton from "@mui/material/IconButton";
 import LinearProgress from "@mui/material/LinearProgress";
 import { createClient } from "@/lib/supabase/client";
-import { finishSaveAction } from "../actions";
+import {
+  beginUploadAction,
+  cleanupRejectedAttemptAction,
+  cleanupUploadAction,
+  failUploadAction,
+  finishSaveAction,
+  retryUploadAction,
+  touchUploadAction,
+} from "../actions";
 import type { FinishSaveResult } from "@/lib/reviews/finish-save";
 
 const BUCKET = "review-files";
 
-type Picked = { file: File; error?: string };
+type Picked = { key: string; file: File; error?: string };
 type Transcript = { key: string; file: File; participantId: string; error?: string };
 
 type Phase =
@@ -61,24 +69,47 @@ export default function UploadForm() {
   const [acknowledged, setAcknowledged] = useState(false);
   const [report, setReport] = useState<Picked | null>(null);
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
+  // The review id and its upload lease token come from begin_upload (review-row-
+  // first). Both are reused while the attempt resumes, and cleared when the inputs
+  // change or the attempt is superseded, so the next save starts a fresh attempt.
   const [reviewId, setReviewId] = useState<string | null>(null);
+  const [opToken, setOpToken] = useState<string | null>(null);
+  // True once this attempt has CONFIRMED-failed (a PUT error): the next save does a
+  // full retry (fresh token + cleanup), not a same-token resume.
+  const [needsFullRetry, setNeedsFullRetry] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: "editing" });
 
   const reportInputRef = useRef<HTMLInputElement>(null);
   const addTranscriptRef = useRef<HTMLInputElement>(null);
+  // Re-entrancy guard: ignore a second submit while one is already in flight, even
+  // during the async window before `busy` becomes true (duplicate-submit prevention).
+  const submittingRef = useRef(false);
 
   const busy = phase.kind === "uploading" || phase.kind === "finishing";
 
-  // Any change to files or participant ids invalidates a pending reviewId, so
-  // the next save starts a brand-new one (our "changed inputs = new save" rule).
+  // Heartbeat: while a long upload/finish is in flight, refresh the lease on a timer
+  // so a single slow transfer is not mistaken for a stalled one. The heartbeat is
+  // token-fenced server-side, so it only ever renews the current attempt.
+  useEffect(() => {
+    if (!busy || !reviewId || !opToken) return;
+    const id = setInterval(() => {
+      void touchUploadAction(reviewId, opToken);
+    }, 25_000);
+    return () => clearInterval(id);
+  }, [busy, reviewId, opToken]);
+
+  // Any change to files or participant ids invalidates a pending attempt, so the
+  // next save starts a brand-new one (our "changed inputs = new save" rule).
   function invalidateSave() {
     setReviewId(null);
+    setOpToken(null);
+    setNeedsFullRetry(false);
     setPhase({ kind: "editing" });
   }
 
   function onPickReport(file?: File) {
     if (!file) return;
-    setReport({ file, error: validateFile(file) });
+    setReport({ key: crypto.randomUUID(), file, error: validateFile(file) });
     invalidateSave();
   }
 
@@ -117,88 +148,190 @@ export default function UploadForm() {
     return transcripts.every((t) => !t.error && t.participantId.trim().length > 0);
   }, [acknowledged, report, transcripts]);
 
+  // Flag the EXACT file the server rejected, by its stable per-row id (the report or
+  // one specific transcript) -- never by filename, which can collide.
+  function markRejectedFile(documentId: string) {
+    setReport((prev) => (prev && prev.key === documentId ? { ...prev, error: "Replace this file." } : prev));
+    setTranscripts((prev) =>
+      prev.map((t) => (t.key === documentId ? { ...t, error: "Replace this file." } : t)),
+    );
+  }
+
+  // A rejected upload must NOT be left as a silently-active 'uploading' review. We
+  // fail THIS attempt (fail_review_op is token-fenced: a no-op if another tab already
+  // reclaimed the review) so it reads as failed/recoverable, then clean just this
+  // attempt's files with the existing attempt-specific sweep -- which targets only
+  // {uid}/{reviewId}/{token}/ and never another attempt's folder, so a concurrent
+  // reclaim is never clobbered. We do NOT delete the whole review (there is no atomic
+  // ownership-confirmed delete); the owner can delete the recoverable draft, and the
+  // whole-prefix cleanup backs it on an eventual delete.
+  async function handleFileRejected(
+    rid: string,
+    tok: string,
+    result: Extract<FinishSaveResult, { status: "file_rejected" }>,
+  ) {
+    await failUploadAction(rid, tok);
+    await cleanupRejectedAttemptAction(rid, tok);
+    markRejectedFile(result.documentId);
+    // Replacing the flagged file starts a fresh save (our "changed inputs = new save"
+    // rule); the failed attempt stays recoverable until the owner deletes it.
+    setReviewId(null);
+    setOpToken(null);
+    setNeedsFullRetry(false);
+    setPhase({ kind: "result", result });
+  }
+
   async function onSave() {
     if (!report) return;
-
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      router.push("/login");
-      return;
-    }
-
-    const rid = reviewId ?? crypto.randomUUID();
-    setReviewId(rid);
-
-    const files = [
-      { role: "report" as const, file: report.file, filename: report.file.name, participantId: null as string | null },
-      ...transcripts.map((t) => ({
-        role: "transcript" as const,
-        file: t.file,
-        filename: t.file.name,
-        participantId: t.participantId.trim(),
-      })),
-    ];
-
-    // --- Upload (direct to Storage). Re-uploading an existing file on retry is
-    //     a no-op we ignore, so only missing files actually transfer. ---
-    setPhase({ kind: "uploading" });
-    for (const f of files) {
-      const path = `${user.id}/${rid}/${f.filename}`;
-      const { error } = await supabase.storage
-        .from(BUCKET)
-        .upload(path, f.file, { upsert: false, contentType: "text/markdown" });
-      if (error && !isAlreadyExists(error.message)) {
-        setPhase({
-          kind: "result",
-          result: {
-            status: "upload_incomplete",
-            message: `${f.filename} didn't finish uploading.`,
-            missing: [f.filename],
-          },
-        });
-        return; // keep reviewId + selections so "Try again" resumes.
-      }
-    }
-
-    // --- Finish on the server ---
-    setPhase({ kind: "finishing" });
-    let result: FinishSaveResult;
+    // Duplicate-submit prevention: ignore a second trigger while one save is still
+    // in flight (covers the async window before `busy` becomes true).
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     try {
-      result = await finishSaveAction({
-        reviewId: rid,
-        documents: files.map((f) => ({
-          role: f.role,
-          filename: f.filename,
-          participantId: f.participantId,
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+
+      const files = [
+        { role: "report" as const, file: report.file, filename: report.file.name, participantId: null as string | null, clientId: report.key },
+        ...transcripts.map((t) => ({
+          role: "transcript" as const,
+          file: t.file,
+          filename: t.file.name,
+          participantId: t.participantId.trim(),
+          clientId: t.key,
         })),
-      });
-    } catch {
-      result = {
-        status: "uncertain",
-        message: "We couldn't confirm your save. Try again to check its status.",
+      ];
+      const documents = files.map((f) => ({ role: f.role, filename: f.filename, participantId: f.participantId, clientId: f.clientId }));
+
+      const finish = async (rid: string, tok: string): Promise<FinishSaveResult> => {
+        try {
+          return await finishSaveAction({ reviewId: rid, opToken: tok, documents });
+        } catch {
+          return { status: "uncertain", message: "We couldn't confirm your save. Try again to check its status." };
+        }
       };
-    }
 
-    if (result.status === "saved") {
-      router.push(`/reviews/${rid}`);
-      return;
-    }
+      // --- RESUME after an uncertain outcome: RECONCILE FIRST, before any upload.
+      //     If a prior finish actually succeeded (its response was lost), this opens
+      //     the existing Draft without re-uploading, marking it failed, or starting
+      //     another review. ---
+      if (reviewId && opToken && !needsFullRetry) {
+        setPhase({ kind: "finishing" });
+        const reconciled = await finish(reviewId, opToken);
+        if (reconciled.status === "saved") {
+          router.push(`/reviews/${reviewId}`);
+          return;
+        }
+        if (reconciled.status === "conflict") {
+          setReviewId(null);
+          setOpToken(null);
+          setNeedsFullRetry(false);
+          setPhase({ kind: "result", result: reconciled });
+          return;
+        }
+        if (reconciled.status === "file_rejected") {
+          await handleFileRejected(reviewId, opToken, reconciled);
+          return;
+        }
+        // upload_incomplete / uncertain / invalid: fall through to (clean +) re-
+        // upload under the SAME attempt. Make sure retired folders are clean first.
+        const c = await cleanupUploadAction(reviewId);
+        if (!c.ok) {
+          setPhase({ kind: "result", result: { status: "uncertain", message: "Finishing cleanup of a previous attempt. Try again." } });
+          return;
+        }
+      }
 
-    // A rejected file, or a genuine conflict, means the next save is a NEW one.
-    if (result.status === "file_rejected") {
-      setTranscripts((prev) =>
-        prev.map((t) => (t.file.name === result.filename ? { ...t, error: "Replace this file." } : t)),
-      );
-      setReviewId(null);
-    }
-    if (result.status === "conflict") {
-      setReviewId(null);
-    }
+      // --- Resolve this attempt's token: one-time full retry, fresh begin, or the
+      //     same token (resume fall-through). ---
+      let rid = reviewId;
+      let tok = opToken;
+      if (rid && tok && needsFullRetry) {
+        const retried = await retryUploadAction(rid);
+        if (retried.status === "error") {
+          setPhase({ kind: "result", result: { status: "uncertain", message: retried.message } });
+          return;
+        }
+        tok = retried.opToken;
+        setOpToken(tok);
+        setNeedsFullRetry(false);
+        if (retried.status === "cleanup_pending") {
+          // The fresh attempt is preserved; do NOT transfer files. The next "Try
+          // again" resumes cleanup without creating another attempt.
+          setPhase({ kind: "result", result: { status: "uncertain", message: retried.message } });
+          return;
+        }
+      } else if (!rid || !tok) {
+        const begun = await beginUploadAction(label ?? "Untitled check");
+        if (begun.status !== "started") {
+          setPhase({ kind: "result", result: { status: "uncertain", message: begun.message } });
+          return;
+        }
+        rid = begun.reviewId;
+        tok = begun.opToken;
+        setReviewId(rid);
+        setOpToken(tok);
+        setNeedsFullRetry(false);
+      }
+      if (!rid || !tok) {
+        setPhase({ kind: "result", result: { status: "uncertain", message: "Couldn't start the upload. Try again." } });
+        return;
+      }
 
-    setPhase({ kind: "result", result });
+      // --- Upload under the per-attempt token folder (existing files skipped). ---
+      setPhase({ kind: "uploading" });
+      for (const f of files) {
+        const path = `${user.id}/${rid}/${tok}/${f.filename}`;
+        const { error } = await supabase.storage
+          .from(BUCKET)
+          .upload(path, f.file, { upsert: false, contentType: "text/markdown" });
+        if (error && !isAlreadyExists(error.message)) {
+          // CONFIRMED upload failure: mark the attempt failed now (immediate
+          // recoverability), and require a full retry next time.
+          await failUploadAction(rid, tok);
+          setNeedsFullRetry(true);
+          setPhase({
+            kind: "result",
+            result: {
+              status: "upload_incomplete",
+              message: `${f.filename} didn't finish uploading.`,
+              missing: [f.filename],
+            },
+          });
+          return; // keep reviewId + selections; "Try again" does a full retry.
+        }
+      }
+
+      // --- Finish on the server ---
+      setPhase({ kind: "finishing" });
+      const result = await finish(rid, tok);
+
+      if (result.status === "saved") {
+        router.push(`/reviews/${rid}`);
+        return;
+      }
+      if (result.status === "file_rejected") {
+        await handleFileRejected(rid, tok, result);
+        return;
+      }
+      if (result.status === "conflict") {
+        setReviewId(null);
+        setOpToken(null);
+        setNeedsFullRetry(false);
+      }
+      // 'uncertain' / 'upload_incomplete' keep the same attempt so the next "Try
+      // again" reconciles (finish-first) and resumes.
+
+      setPhase({ kind: "result", result });
+    } finally {
+      submittingRef.current = false;
+    }
   }
 
   const result = phase.kind === "result" ? phase.result : null;
@@ -213,9 +346,14 @@ export default function UploadForm() {
         {/* Acknowledgment gate */}
         <Box>
           <Typography variant="body2" color="text.secondary" gutterBottom>
-            Your report and transcripts contain research data. They are uploaded to
-            your own private storage, visible only to you, and are used only to check
-            the quotations in your report. Confirm you understand before uploading.
+            Your report and transcripts contain research data. They are stored in
+            private Supabase Storage tied to your account, reachable only by you
+            (owner-only access), and are used only to check the quotations in your
+            report — the check runs on our server by text comparison and your files
+            are not sent to any external AI service. You can delete a check at any
+            time, which removes its records and files; if file removal can&apos;t
+            finish right away, it completes the next time you open your checks.
+            Confirm you understand before uploading.
           </Typography>
           <FormControlLabel
             control={

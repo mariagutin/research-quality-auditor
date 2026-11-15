@@ -138,6 +138,33 @@ to the database or the AI provider directly. Responsibilities:
   never present a failed or incomplete check as "No issues found"
   (TR-13, TR-14, NFR-05).
 
+> **Current implementation (MVP) — server-side text comparison, no external AI.**
+> The checker today runs **entirely as server-side text comparison**: straight
+> double-quoted quotations are extracted from the report and matched — exact first,
+> then a lexical near-match — against participant-labeled transcript speech
+> (Moderator excluded); every excerpt shown is a real transcript line, so nothing is
+> invented. **No external AI provider is used** — there are no AI dependencies and
+> no external/AI calls (`lib/reviews/run-check.ts`, `lib/reviews/text-compare.ts`;
+> only Supabase storage/DB are contacted). The AI-assisted extraction / candidate
+> lookup described in the "Evidence verification" bullet above remains the **open
+> decision** recorded below: this note states **what is built today** and is **not**
+> a decision to include or exclude AI.
+>
+> *Against the quotation-verification requirements, the current checker:*
+> - **Meets** — comparison of wording **and** participant identity across all
+>   transcripts (TR-08); verbatim evidence verification with no invention and a
+>   no-match result when a quote isn't found (TR-08/09, NFR-04); persistence,
+>   status, retry-without-re-upload, and never showing "No issues found" on a
+>   failed/incomplete check (TR-13/14, NFR-05); upload-time participant-label
+>   validation (TR-05/06).
+> - **Does not fully meet** — TR-07's **"Participant not specified"** flag (an
+>   unstated id is treated as unattributed, not flagged); and the wording check is
+>   **lexical, not semantic**, with extraction limited to **straight double-quoted**
+>   spans — so paraphrases outside quotes, smart/curly quotes, and meaning-level
+>   differences are not caught. Closing those gaps is a quality improvement (which an
+>   AI assist could provide); it is not strictly required by the literal
+>   requirements above.
+
 Credentials and AI API keys live only on the server and are kept out of browser
 code, the public repository, and user-facing errors (NFR-01). Full reports,
 transcripts, quotations, and passwords are kept out of logs; logs carry only

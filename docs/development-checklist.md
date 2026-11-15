@@ -14,6 +14,16 @@ are preserved; only the project name/repository are adapted to this project.
   `[ ]` = not done, partial, or not verifiable from the repo. Each item has a
   short *Status* note with the evidence or the reason. ⚠️ marks a conflict or
   something to confirm.
+- **Scope decision — accessibility (2026-11-13):** The dedicated **accessibility
+  audit and remediation phase is deferred until after MVP.** Existing accessibility
+  features are **kept intact** (semantic MUI components; `role="status"` /
+  `role="alert"` live regions on confirmations and errors; labelled form fields and
+  an `aria-label` on the decision control; keyboard-operable buttons/toggles). But
+  accessibility has **not been comprehensively verified** — no formal audit
+  (automated or manual, including screen-reader and keyboard-only testing) has been
+  performed, and `architecture.md`'s "first-class … keyboard-only" accessibility
+  requirement is therefore **only partially met**. **No accessibility compliance
+  (e.g. WCAG) is claimed.**
 
 ---
 

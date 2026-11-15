@@ -79,7 +79,10 @@ insert into public.documents (id, review_id, user_id, role, filename, storage_pa
 insert into public.quotations
   (id, review_id, report_document_id, user_id, original_text, start_offset, end_offset, checking_result) values
   ('00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-00000000000a', 'Participants reported high satisfaction.', 0, 40, 'has_issues'),
-  ('00000000-0000-0000-0000-0000000000c2', '00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000d3', '00000000-0000-0000-0000-00000000000a', 'No concerns were raised.', 0, 24, 'no_issues');
+  -- A2 has only a report (no transcript), so a `no_issues` quote here can't carry
+  -- matched evidence; use `has_issues` to satisfy the later match-evidence CHECK
+  -- (migration 20261110120000). This section tests RLS/cascade, not the result value.
+  ('00000000-0000-0000-0000-0000000000c2', '00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000d3', '00000000-0000-0000-0000-00000000000a', 'No concerns were raised.', 0, 24, 'has_issues');
 
 -- Issues on quotation c1: one WITH transcript evidence, one evidence-free quote_not_found.
 insert into public.issues
@@ -226,8 +229,10 @@ do $$
 begin
   insert into public.quotations
     (review_id, report_document_id, user_id, original_text, start_offset, end_offset, checking_result)
+  -- `has_issues` (no matched evidence) is CHECK-valid, so the role FK -- not the
+  -- match-evidence CHECK -- is what must reject this cross-role link.
   values ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000d2',
-          '00000000-0000-0000-0000-00000000000a', 'bad role', 0, 5, 'no_issues');
+          '00000000-0000-0000-0000-00000000000a', 'bad role', 0, 5, 'has_issues');
   raise exception 'FAIL 4b: quotation accepted a transcript as its report document';
 exception
   when foreign_key_violation then
@@ -251,6 +256,14 @@ end $$;
 -- 6. CASCADE DELETE - deleting review A1 removes its children; A2 and B survive.
 -- ===========================================================================
 -- Still acting as owner A.
+-- The delete guard (migration 20261112000000) requires a successor whole-prefix
+-- cleanup record before a review row may be removed (finalize_review_deletion
+-- normally creates it). Insert it directly here so this section still exercises the
+-- plain child cascade.
+insert into public.review_file_cleanups (user_id, review_id, prefix)
+values ('00000000-0000-0000-0000-00000000000a',
+        '00000000-0000-0000-0000-0000000000a1',
+        '00000000-0000-0000-0000-00000000000a/00000000-0000-0000-0000-0000000000a1');
 delete from public.reviews where id = '00000000-0000-0000-0000-0000000000a1';
 do $$
 declare n int;

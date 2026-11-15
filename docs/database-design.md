@@ -83,7 +83,7 @@ set. The columns and their constraints:
 
 | Table | Column | Allowed values (CHECK) | Note |
 | --- | --- | --- | --- |
-| reviews | processing_status | `draft`, `processing`, `complete`, `failed`, `deleting` | Finalized in the initial migration; a failed/incomplete check must never read as "no issues" (TR-13). |
+| reviews | processing_status | `draft`, `uploading`, `processing`, `complete`, `failed`, `deleting` | `uploading` added by the review-lifecycle migration (20261112000000); a failed/incomplete check must never read as "no issues" (TR-13). |
 | documents | validation_status | `pending`, `valid`, `invalid` | Finalized in the initial migration (TR-02, TR-04). |
 | quotations | checking_result | `no_issues`, `has_issues` | Finalized in the initial migration; drives TR-12 summary counts. |
 | issues | issue_type | `wording_mismatch`, `participant_mismatch`, `participant_not_specified`, `quote_not_found` | Set fixed by TR-07/TR-08. |
@@ -103,7 +103,10 @@ still change later via an ordinary constraint change; the enforcement mechanism
 | id | uuid | Yes | Unique id for the review. |
 | user_id | uuid | Yes | The person who owns this review (`auth.users.id`). |
 | name | text | Yes | A name the researcher gives the review. |
-| processing_status | text | Yes | Where the check is: `draft`, `processing`, `complete`, `failed`, `deleting`. `text` + `CHECK` (see Allowed values), finalized in the migration. Must never let a failed/incomplete check read as "no issues found" (TR-13). |
+| processing_status | text | Yes | Where the check is: `draft`, `uploading`, `processing`, `complete`, `failed`, `deleting`. `text` + `CHECK` (see Allowed values). Must never let a failed/incomplete check read as "no issues found" (TR-13). |
+| op_token | uuid | No | Current operation lease / attempt id; writes are fenced on it, and for an upload it is also the Storage path segment `{uid}/{reviewId}/{op_token}/`. Null when settled. (Lifecycle migration 20261112000000.) |
+| op_heartbeat_at | timestamptz | No | Last recorded activity for the current operation (database time). Staleness = `now() - op_heartbeat_at > 2 minutes`. |
+| op_failed_at | timestamptz | No | Set when the current upload/deletion attempt is CONFIRMED failed (so recovery need not wait for the staleness timeout); reset to null when a new attempt begins. |
 | created_at | timestamptz | Yes | When the review was created. |
 | updated_at | timestamptz | Yes | When the review last changed. |
 
@@ -149,6 +152,9 @@ its overall checking result.
 | start_offset | integer | Yes | Start position of the quotation in the report's original Markdown text (see Counting convention). |
 | end_offset | integer | Yes | End position, **excluded** (half-open), so `end_offset - start_offset` is the quotation's length (see Counting convention). |
 | checking_result | text | Yes | Outcome for this quotation: `no_issues`, `has_issues`. `text` + `CHECK` (see Allowed values), finalized in the migration; used for the TR-12 summary counts. |
+| matched_document_id | uuid | No | The **transcript** document where a verified quote was found (→ `documents.id`; a `role = 'transcript'` document in this same review), or null for an unmatched quote. (Match-evidence migration 20261110120000.) |
+| matched_role | text | No | Fixed-value column, always `'transcript'`. Part of the composite foreign key that forces `matched_document_id` to point at a `role = 'transcript'` document (see Rules for linked records). Not shown to users. |
+| matched_excerpt | text | No | The matched transcript passage (the participant turn). Paired with `matched_document_id`: both present or both null. A `no_issues` quotation must carry this evidence (an unmatched quote is never stored as verified). |
 | created_at | timestamptz | Yes | When the record was created. |
 
 > **Counting convention for `start_offset` / `end_offset`.** Positions count
@@ -241,6 +247,43 @@ question.
 **Who can add, change, or delete it?** Only the owner, and only for an issue inside a
 review they own.
 
+## Table name: review_dead_upload_attempts
+
+**What it stores:** One durable reminder per RETIRED upload-attempt token, so the
+files under that attempt's folder `{uid}/{reviewId}/{token}/` can be swept later.
+Written only by `retry_upload`, atomically when an attempt's token is retired, so the
+live `op_token` is never recorded here. Added by the lifecycle migration
+(20261112000000).
+
+| Column name | Type | Required? | What it means |
+| --- | --- | --- | --- |
+| review_id | uuid | Yes | The review whose attempt was retired (part of the PK; composite FK → `reviews`). |
+| token | uuid | Yes | The retired attempt's token (part of the PK). Its folder may still need sweeping. |
+| user_id | uuid | Yes | Owner; part of the composite FK `(review_id, user_id) → reviews(id, user_id)`. |
+| created_at | timestamptz | Yes | When the attempt was retired. |
+
+**Who can see/change it?** Only the owner, and only for a review they own (owner-only RLS).
+
+## Table name: review_file_cleanups
+
+**What it stores:** One whole-prefix cleanup record per deleted review, so its files
+(including any late arrivals) always have a durable owner to drive the sweep. Created
+atomically with the review-row delete in `finalize_review_deletion`; a BEFORE DELETE
+guard forbids deleting a review without it. It **deliberately has NO foreign key to
+`reviews`** so it OUTLIVES the deleted review row. Added by the lifecycle migration
+(20261112000000).
+
+| Column name | Type | Required? | What it means |
+| --- | --- | --- | --- |
+| id | uuid | Yes | Unique id for the cleanup record. |
+| user_id | uuid | Yes | Owner (→ `auth.users.id`); the only link, since there is no FK to `reviews`. |
+| review_id | uuid | Yes | The deleted review's id (recorded, not a foreign key). |
+| prefix | text | Yes | The whole Storage prefix to sweep, `{uid}/{reviewId}`. Unique per `(user_id, prefix)`. |
+| finalized_at | timestamptz | Yes | When the deletion was finalized. |
+| created_at | timestamptz | Yes | When the record was created. |
+
+**Who can see/change it?** Only the owner (owner-only RLS).
+
 ---
 
 # How the tables connect
@@ -250,12 +293,19 @@ review they own.
 - One **review** has many **documents** (one report and one or more transcripts).
   Each document belongs to one review.
 - One **review** has many **quotations**. Each quotation belongs to one review and
-  was extracted from one **report document**.
+  was extracted from one **report document**, and may also point to the **transcript
+  document** where its wording was matched (`matched_document_id`, with
+  `matched_excerpt`).
 - One **quotation** can have many **issues**. Each issue belongs to one quotation
   (and to the same review). A flagged issue may also point to one **source document**
   (the transcript the evidence came from).
 - One **issue** has **zero or one** current **review decision**: none while it is
   unreviewed, and one once a decision is saved. Each decision belongs to one issue.
+- A **review** may have **retired upload attempts** (`review_dead_upload_attempts`,
+  one per retired token) while it exists; these cascade away with the review.
+- A deleted **review** leaves a **file-cleanup record** (`review_file_cleanups`) that
+  OUTLIVES it (no FK to `reviews`), tying its owner to the Storage prefix still being
+  swept.
 
 **Keeping records in the same review and owner.** Every child row carries a link to
 its parent (`review_id`, `quotation_id`, or `issue_id`) *and* a `user_id`, and every
@@ -265,6 +315,8 @@ linked record must belong to the **same review and the same owner**. In particul
   match their parents' review, all owned by the same person.
 - `quotations.report_document_id` must reference a **report** document
   (`role = 'report'`) in that same review.
+- `quotations.matched_document_id`, when present, must reference a **transcript**
+  document (`role = 'transcript'`) in that same review.
 - `issues.source_document_id` must reference a **transcript** document
   (`role = 'transcript'`) in that same review.
 - A `review_decisions` row belongs to an issue in that review, with the same owner.
@@ -453,6 +505,22 @@ Supabase):
   creates the five tables, their `CHECK` constraints, the composite foreign keys
   (owner + review + role), supporting indexes, the `updated_at` trigger, and owner-only
   RLS policies.
+
+Later migrations extend this schema (the diagram and tables above reflect them):
+
+- `20261110120000_add_quotation_match_evidence.sql` — adds `quotations.matched_document_id`,
+  `matched_role`, `matched_excerpt` (+ composite role-FK and pairing/evidence CHECKs).
+- `20261112000000_review_lifecycle_and_operation_leases.sql` — adds the `uploading`
+  status, the `op_token`/`op_heartbeat_at`/`op_failed_at` lease columns on `reviews`,
+  the `review_dead_upload_attempts` and `review_file_cleanups` tables (owner-only RLS),
+  the lifecycle functions, and the decision/delete guard triggers.
+- `20261112010000_tie_review_uploads_to_current_attempt.sql` — tightens the Storage
+  INSERT policy to the current attempt's `{uid}/{reviewId}/{op_token}/` path.
+- `20261112020000_review_op_active.sql` — read-only `review_op_active()` helper.
+
+(The four `2026110*`–`2026111*` migrations between the init and the lifecycle set add
+the Data-API grants, least-privilege revokes, the `create_review_with_documents`
+function, the private `review-files` Storage bucket, and issue source-evidence.)
 
 - [x] Every change to my database is saved as a SQL migration file in my repository.
 - [x] I can tell what each migration file does from its name.

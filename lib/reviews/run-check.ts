@@ -3,8 +3,8 @@
 // Given a saved review (one report + one or more transcripts), this:
 //   1. extracts the report's quotations (straight double-quoted spans),
 //   2. records the report's attributed participant id ONLY when clearly stated,
-//   3. looks for each quote verbatim in CONFIRMED-PARTICIPANT speech (excluding
-//      Moderator and other lines),
+//   3. looks for each quote in each CONFIRMED-PARTICIPANT TURN read in full --
+//      verbatim, else a best-fitting near match (Moderator/other speakers excluded),
 //   4. records a "wording matched" result with the transcript evidence, or marks
 //      the quote `quote_not_found` with no evidence.
 //
@@ -13,7 +13,7 @@
 // user. Results are stored internally; nothing here is shown to the researcher.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { wordNorms, similarity, contiguousContains } from "./text-compare";
+import { wordNorms, contiguousContains, bestWindow } from "./text-compare";
 
 export const REVIEW_FILES_BUCKET = "review-files";
 
@@ -47,8 +47,14 @@ export interface QuotationResult {
 }
 
 export type RunCheckResult =
+  // Results saved; review is `complete`.
   | { status: "complete"; quotations: number }
-  | { status: "error"; message: string };
+  // A CONFIRMED failure (bad state, unreadable files, or an unexpected exception):
+  // the lease is released to `failed` via the token-fenced path.
+  | { status: "error"; message: string }
+  // The results-save outcome is UNKNOWN (we couldn't confirm it committed). Kept
+  // distinct from a confirmed failure; the review is reconciled by state.
+  | { status: "uncertain"; message: string };
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -137,18 +143,64 @@ function detectAttribution(
   return hits.size === 1 ? [...hits][0] : null;
 }
 
-// A transcript's lines spoken by its confirmed participant (label before the
-// first colon equals the participant id). Trailing whitespace trimmed; the label
-// is kept so the stored excerpt is the whole participant line.
-function participantLines(text: string, participantId: string): string[] {
-  const out: string[] = [];
+// Is this line a VALID speaker label, and if so, whose turn does it start? A valid
+// label is the confirmed participant id, "Moderator" (case-insensitive), or any
+// participant-id-shaped token (letters then digits, e.g. P03) before the first
+// colon. A colon inside ordinary speech ("Honestly: ...", "First: ...") is NOT a
+// valid label (the pre-colon text isn't one of those), so it never starts a turn.
+function turnSpeaker(line: string, participantId: string): string | null {
+  const colon = line.indexOf(":");
+  if (colon < 0) return null;
+  const token = line.slice(0, colon).trim();
+  if (token.length === 0) return null;
+  if (token === participantId) return participantId;
+  if (token.toLowerCase() === "moderator") return "Moderator";
+  if (/^[A-Za-z]+[-_]?\d+$/.test(token)) return token; // another participant id
+  return null; // ordinary speech with a colon -> continuation, not a new turn
+}
+
+interface Turn {
+  speaker: string;
+  raw: string; // verbatim turn: label line + continuation lines (trailing ws trimmed per line)
+  words: string[]; // normalized spoken words across the WHOLE turn (first-line label stripped)
+}
+
+// Split a transcript into speaker TURNS. A turn starts at a valid speaker label and
+// runs through every continuation line until the NEXT valid label (or end of file),
+// so a quotation on a continuation line -- or spanning the label/continuation break
+// -- is read as one passage. ANY valid label ends the current turn, including a
+// different participant id or the same participant starting again, so a stray "P03:"
+// can never be absorbed into P05's speech (upload validation also rejects such a
+// file; this is the in-checker safeguard). Moderator/other-speaker turns are kept
+// for segmentation but excluded from matching by the caller. See ADR-0006.
+function participantTurns(text: string, participantId: string): Turn[] {
+  const turns: Turn[] = [];
+  let rawLines: string[] = [];
+  let spokenParts: string[] = [];
+  let speaker: string | null = null;
+  const flush = () => {
+    if (speaker !== null) {
+      // Trim trailing blank continuation lines (e.g. the file's final newline) so the
+      // stored turn ends at its last real content.
+      const raw = rawLines.join("\n").replace(/\s+$/, "");
+      turns.push({ speaker, raw, words: wordNorms(spokenParts.join(" ")) });
+    }
+  };
   for (const raw of text.split(/\r?\n/)) {
-    const colon = raw.indexOf(":");
-    if (colon < 0) continue;
-    const speaker = raw.slice(0, colon).trim();
-    if (speaker === participantId) out.push(raw.replace(/\s+$/, ""));
+    const label = turnSpeaker(raw, participantId);
+    if (label !== null) {
+      flush();
+      speaker = label;
+      rawLines = [raw.replace(/\s+$/, "")];
+      spokenParts = [raw.slice(raw.indexOf(":") + 1)];
+    } else if (speaker !== null) {
+      rawLines.push(raw.replace(/\s+$/, ""));
+      spokenParts.push(raw);
+    }
+    // else: preamble before the first speaker label -> ignored
   }
-  return out;
+  flush();
+  return turns;
 }
 
 export function analyzeReport(args: {
@@ -159,24 +211,30 @@ export function analyzeReport(args: {
   const { reportDocumentId, reportText, transcripts } = args;
   const confirmedIds = [...new Set(transcripts.map((t) => t.participantId).filter(Boolean))];
 
-  // Flat list of participant passages (Moderator excluded), each with the
-  // normalized words used for comparison, in a stable canonical order:
-  // participant id, then document id, then line position. That order is the
-  // documented tie-breaker when scores are equal.
+  // Flat list of participant passages -- one per PARTICIPANT TURN (Moderator and
+  // other speakers excluded) -- each with the normalized words used for comparison,
+  // in a stable canonical order: participant id, then document id, then turn
+  // position. That order is the documented tie-breaker when scores are equal.
   interface Passage {
     docId: string;
     participantId: string;
-    lineIndex: number;
+    turnIndex: number;
     raw: string;
     words: string[];
   }
   const passages: Passage[] = [];
   for (const t of transcripts) {
-    participantLines(t.text, t.participantId).forEach((raw, lineIndex) => {
-      const colon = raw.indexOf(":");
-      const spoken = colon >= 0 ? raw.slice(colon + 1).trim() : raw;
-      passages.push({ docId: t.documentId, participantId: t.participantId, lineIndex, raw, words: wordNorms(spoken) });
-    });
+    participantTurns(t.text, t.participantId)
+      .filter((turn) => turn.speaker === t.participantId) // Moderator / other speakers excluded
+      .forEach((turn, turnIndex) => {
+        passages.push({
+          docId: t.documentId,
+          participantId: t.participantId,
+          turnIndex,
+          raw: turn.raw,
+          words: turn.words,
+        });
+      });
   }
   passages.sort((a, b) =>
     a.participantId < b.participantId
@@ -187,7 +245,7 @@ export function analyzeReport(args: {
           ? -1
           : a.docId > b.docId
             ? 1
-            : a.lineIndex - b.lineIndex,
+            : a.turnIndex - b.turnIndex,
   );
 
   // The first exact passage (quote said verbatim, up to case/punctuation) among
@@ -195,17 +253,20 @@ export function analyzeReport(args: {
   const firstExact = (pred: (p: Passage) => boolean, needle: string[]): Passage | null =>
     passages.find((p) => pred(p) && contiguousContains(p.words, needle)) ?? null;
 
-  // The highest-scoring near passage among those matching `pred`. Ties go to the
-  // earlier passage in canonical order (strict `>` keeps the first seen).
+  // The highest-scoring near passage among those matching `pred`. Within each turn
+  // the quote is scored against its best-fitting WINDOW (fitting alignment), not the
+  // whole turn, so a long turn does not dilute the score and a stray matching word
+  // far away does not stretch the candidate. Ties go to the earlier passage in
+  // canonical order (strict `>` keeps the first seen).
   const bestNear = (pred: (p: Passage) => boolean, needle: string[]): Passage | null => {
     let best: Passage | null = null;
     let bestScore = 0;
     for (const p of passages) {
       if (!pred(p)) continue;
-      const score = similarity(needle, p.words);
-      if (score >= NEAR_MATCH_THRESHOLD && score > bestScore) {
+      const w = bestWindow(needle, p.words);
+      if (w && w.score >= NEAR_MATCH_THRESHOLD && w.score > bestScore) {
         best = p;
-        bestScore = score;
+        bestScore = w.score;
       }
     }
     return best;
@@ -363,44 +424,146 @@ export async function runReviewCheck(
   supabase: SupabaseClient,
   _userId: string,
   reviewId: string,
+  // Test-only seams (production callers omit them): a faster heartbeat interval and
+  // hooks to inject a delay or interfere right before analysis / the results save.
+  options: {
+    heartbeatMs?: number;
+    beforeAnalyze?: () => Promise<void>;
+    beforeSave?: () => Promise<void>;
+  } = {},
 ): Promise<RunCheckResult> {
-  const { data: docs, error } = await supabase
-    .from("documents")
-    .select("id, role, filename, storage_path, participant_id")
-    .eq("review_id", reviewId);
-  if (error) return { status: "error", message: "Could not load this review's files." };
-  if (!docs || docs.length === 0) return { status: "error", message: "This review has no files." };
-
-  const report = docs.find((d) => d.role === "report");
-  const transcripts = docs.filter((d) => d.role === "transcript");
-  if (!report) return { status: "error", message: "This review has no report." };
-  if (transcripts.length === 0) return { status: "error", message: "This review has no transcripts." };
-
-  const reportText = await downloadText(supabase, report.storage_path as string);
-  if (reportText === null) return { status: "error", message: `Could not read ${report.filename}.` };
-
-  const transcriptInputs: TranscriptInput[] = [];
-  for (const t of transcripts) {
-    const text = await downloadText(supabase, t.storage_path as string);
-    if (text === null) return { status: "error", message: `Could not read ${t.filename}.` };
-    transcriptInputs.push({
-      documentId: t.id as string,
-      participantId: ((t.participant_id as string | null) ?? "").trim(),
-      text,
-    });
-  }
-
-  const results = analyzeReport({
-    reportDocumentId: report.id as string,
-    reportText,
-    transcripts: transcriptInputs,
-  });
-
-  const { error: rpcError } = await supabase.rpc("record_quotation_results", {
+  // Acquire the processing lease atomically (database-time staleness, fresh token).
+  // begin_review_op allows this ONLY from draft/failed or a recoverable (stale)
+  // processing; NEVER from complete (no re-run), uploading (finish first), an active
+  // processing, or deleting. The returned token fences every write below.
+  const { data: token, error: beginErr } = await supabase.rpc("begin_review_op", {
     p_review_id: reviewId,
-    p_results: results,
+    p_op: "processing",
   });
-  if (rpcError) return { status: "error", message: "Could not save the check results." };
+  if (beginErr) return { status: "error", message: "Could not start the check." };
+  if (!token) {
+    const { data: now } = await supabase
+      .from("reviews")
+      .select("processing_status")
+      .eq("id", reviewId)
+      .maybeSingle();
+    if (!now) return { status: "error", message: "This check no longer exists." };
+    switch (now.processing_status) {
+      case "complete":
+        return { status: "error", message: "This check has already been run." };
+      case "processing":
+        return { status: "error", message: "This check is already running." };
+      case "deleting":
+        return { status: "error", message: "This check is being deleted." };
+      case "uploading":
+        return { status: "error", message: "This review is still uploading." };
+      default:
+        return { status: "error", message: "This check can't run right now." };
+    }
+  }
+  const opToken = token as string;
 
-  return { status: "complete", quotations: results.length };
+  // A single heartbeat. Our installed Supabase client's rpc() is LAZY -- it only
+  // sends the request when the returned builder is awaited/then-ed -- so we MUST
+  // await it here; a non-awaited `void supabase.rpc(...)` would never fire. Errors
+  // are swallowed: the heartbeat is best-effort and must not fail the check.
+  // touch_review_op is token-fenced, so only THIS attempt renews the lease.
+  const heartbeatOnce = async () => {
+    try {
+      await supabase.rpc("touch_review_op", { p_review_id: reviewId, p_token: opToken });
+    } catch {
+      /* best-effort */
+    }
+  };
+  const heartbeat = setInterval(() => {
+    void heartbeatOnce();
+  }, options.heartbeatMs ?? 25_000);
+
+  // Confirmed failure: release the lease to `failed` (fenced on our token, so a
+  // superseded attempt's failure never clobbers the current one).
+  const fail = async (message: string): Promise<RunCheckResult> => {
+    await supabase.rpc("fail_review_op", { p_review_id: reviewId, p_token: opToken });
+    return { status: "error", message };
+  };
+
+  try {
+    const { data: docs, error } = await supabase
+      .from("documents")
+      .select("id, role, filename, storage_path, participant_id")
+      .eq("review_id", reviewId);
+    if (error) return await fail("Could not load this review's files.");
+    if (!docs || docs.length === 0) return await fail("This review has no files.");
+
+    const report = docs.find((d) => d.role === "report");
+    const transcripts = docs.filter((d) => d.role === "transcript");
+    if (!report) return await fail("This review has no report.");
+    if (transcripts.length === 0) return await fail("This review has no transcripts.");
+
+    const reportText = await downloadText(supabase, report.storage_path as string);
+    if (reportText === null) return await fail(`Could not read ${report.filename}.`);
+
+    const transcriptInputs: TranscriptInput[] = [];
+    for (const t of transcripts) {
+      const text = await downloadText(supabase, t.storage_path as string);
+      if (text === null) return await fail(`Could not read ${t.filename}.`);
+      transcriptInputs.push({
+        documentId: t.id as string,
+        participantId: ((t.participant_id as string | null) ?? "").trim(),
+        text,
+      });
+      // Touch at each file boundary too (covers a long multi-file download).
+      await heartbeatOnce();
+    }
+
+    await options.beforeAnalyze?.();
+
+    const results = analyzeReport({
+      reportDocumentId: report.id as string,
+      reportText,
+      transcripts: transcriptInputs,
+    });
+
+    await options.beforeSave?.();
+
+    // record_quotation_results is FENCED on the token: an outdated attempt (whose
+    // lease was taken over) cannot save results or flip the status. It sets the
+    // review to 'complete' only on success, in the same transaction as the results.
+    const { error: rpcError } = await supabase.rpc("record_quotation_results", {
+      p_review_id: reviewId,
+      p_results: results,
+      p_op_token: opToken,
+    });
+
+    if (rpcError) {
+      // We cannot be sure the save committed. Reconcile by state -- this is an
+      // UNCERTAIN result-save outcome, kept distinct from a confirmed failure.
+      const { data: after } = await supabase
+        .from("reviews")
+        .select("processing_status, op_token")
+        .eq("id", reviewId)
+        .maybeSingle();
+      if (after?.processing_status === "complete") {
+        // It actually saved; only the response was lost.
+        return { status: "complete", quotations: results.length };
+      }
+      // Still ours and not complete -> release the lease (fenced). If a takeover
+      // changed the token, leave it to that attempt (fenced fail would no-op).
+      if (after?.op_token === opToken) {
+        await supabase.rpc("fail_review_op", { p_review_id: reviewId, p_token: opToken });
+      }
+      return {
+        status: "uncertain",
+        message: "We couldn't confirm the check results were saved. Try again to check its status.",
+      };
+    }
+
+    return { status: "complete", quotations: results.length };
+  } catch {
+    // An unexpected exception from a download or the analysis is a CONFIRMED
+    // failure, routed through the token-fenced failure path.
+    return await fail("The check failed unexpectedly. Try again.");
+  } finally {
+    // Always stop the heartbeat, on every path.
+    clearInterval(heartbeat);
+  }
 }
