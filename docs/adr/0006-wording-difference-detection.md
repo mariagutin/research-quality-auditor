@@ -121,3 +121,79 @@ controls are shown yet.
 - No schema change: the `wording_mismatch` issue type and multiple issues per
   quotation were already supported, so no migration. Hosted Supabase is
   untouched.
+
+---
+
+## Update 2026-11-15 — full-turn matching and fitting-alignment candidate selection
+
+> This amends the matching behavior above; the original decision is kept for
+> history. No schema change; pure logic in `lib/reviews/run-check.ts`,
+> `lib/reviews/text-compare.ts`, `lib/reviews/issues-view.ts`, plus an upload
+> safeguard in `lib/reviews/finish-save.ts`. Hosted Supabase untouched.
+
+### Why
+The original checker compared per **line**: a quotation that sat on a transcript
+**continuation line**, or that **spanned a line break**, was missed, and scoring a
+reworded quote against a long multi-line turn **diluted** the similarity (and a
+single stray matching word far away could stretch the candidate). We now read full
+participant **turns** and pick the candidate passage with a fitting alignment.
+
+### What changed
+1. **Turn parsing.** A turn starts at any **valid speaker label** — the confirmed
+   participant id, `Moderator` (case-insensitive), or any participant-id-shaped
+   token (letters then digits, e.g. `P03`) before the first colon — and runs through
+   every **continuation line** until the next valid label (or end of file). A colon
+   inside ordinary speech (`Honestly:`, `First:`) is **not** a label, so it never
+   starts a turn. **Any** valid label ends the current turn, including a different
+   participant id or the same participant starting again, so a stray `P03:` can never
+   be absorbed into `P05`'s speech. Moderator/other-speaker turns are segmented but
+   **excluded** from matching. Trailing blank lines are trimmed from the stored turn.
+2. **Upload safeguard (separate, earlier).** `finish-save.ts` now **rejects** a
+   transcript containing a conflicting speaker label (`findConflictingSpeakerLabel`
+   — any id-shaped/`Moderator` label that is neither the confirmed id nor
+   `Moderator`), so by check time only the expected labels exist. The checker's
+   boundary rule above is the in-checker second safeguard. (A non-id-shaped role word
+   such as `Interviewer:` is intentionally **not** treated as a label, to avoid
+   colliding with ordinary speech; noted limitation.)
+3. **Exact match** — unchanged rule, now evaluated over the **full turn's** words, so
+   a verbatim quote on a continuation line or across a line break matches.
+4. **Near match** — scored against the best-fitting **window** inside the turn, not
+   the whole turn. A **fitting alignment** (the whole quote is aligned; the turn's
+   start/end are free) locates the window, scoring **MATCH +4, MISMATCH 0, GAP −1**,
+   chosen so `GAP < MISMATCH < MATCH + 3·GAP`. That inequality keeps **both** a
+   terminal substitution in the window (`time` vs `hours`) **and** a short internal
+   insertion spanned to a real later match (`a lot of` between `me` and `time`),
+   while a **distant** stray match is still excluded (many gaps outweigh one match).
+   The **0.70 threshold** and the **four-word minimum on the report quotation** (no
+   floor on the candidate window) are **unchanged**; the flag decision still uses the
+   LCS `similarity` on the chosen window. Tie-break: canonical passage order across
+   turns; within a turn the end column prefers the longer span.
+5. **Evidence / display.** The stored evidence is the **full verbatim turn**. For a
+   wording difference the candidate window is **recomputed at display** with the same
+   fitting alignment, and **only words inside it are highlighted** — so the report
+   word and the source word (`time` vs `hours`) are shown against each other and the
+   surrounding turn is plain, unhighlighted context.
+
+### Benchmark (helper-level timing only)
+A scratch benchmark measured the fitting-alignment helper at roughly **0.02–0.05 ms
+per (quote, turn)** for turns up to ~2000 words (`O(L × turnWords)`). This is
+helper-level timing for orientation; it is **not** a correctness or accuracy claim,
+and these worked examples do **not** establish overall matching accuracy — that
+remains the aggregate quality-targets work (NFR-10, Open Decision #3 in
+`architecture.md`).
+
+### Limitations (updated)
+- Replaces the original "line-bounded" note: comparison is now **turn-bounded**. A
+  quote spanning **two turns** still will not match (by design).
+- Similarity is still **not meaning**; the near match points to a *possible* source.
+
+### Verification (added)
+- Pure CI unit tests in `scripts/ci/turn-matching.test.mts` (run by the **unit-tests**
+  job via `npm run test:unit`): continuation-line exact match, quote spanning the
+  line break, speaker boundaries (different id and same-id re-label), moderator
+  exclusion (label and continuation lines), ordinary colons, a four-word quote vs a
+  three-word source, the **distant-word regression** (nearby `hours` passage chosen,
+  not `quote_not_found`), and the pure speaker-label conflict validator.
+- Existing local tests still pass: `scripts/run-check.local-test.mts` (matching +
+  lease, local stack), `scripts/issues-view.local-test.mts`,
+  `scripts/text-compare.local-test.mts`, `scripts/upload-flow.local-test.mts`.

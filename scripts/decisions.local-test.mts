@@ -64,8 +64,9 @@ async function main() {
   const t05 = randomUUID();
   const base = `${userId}/${reviewId}`;
   const uploaded: string[] = [];
+  // Fixtures upload via the service-role client to bypass the upload-attempt policy.
   const up = async (path: string, content: string) => {
-    const { error } = await (anna as SupabaseClient).storage
+    const { error } = await admin.storage
       .from(REVIEW_FILES_BUCKET)
       .upload(path, new Blob([content], { type: "text/markdown" }), { upsert: false });
     if (error) throw new Error(`upload ${path}: ${error.message}`);
@@ -107,11 +108,54 @@ async function main() {
     check("switch back: returns saved", back.status === "saved", JSON.stringify(back));
     ({ data: rows } = await anna.from("review_decisions").select("issue_id, decision").eq("issue_id", issueId));
     check("switch back: still one row, now dismiss", rows?.length === 1 && rows[0].decision === "dismiss", JSON.stringify(rows));
+
+    // Reviewed count is unchanged when switching a decision (the issue was already
+    // reviewed; switching among the three values does not change the count).
+    const reviewedCount = async () => {
+      const { data: iss } = await anna.from("issues").select("id").eq("review_id", reviewId);
+      const ids = (iss ?? []).map((i) => i.id as string);
+      if (ids.length === 0) return 0;
+      const { data: decs } = await anna.from("review_decisions").select("issue_id").in("issue_id", ids);
+      return new Set((decs ?? []).map((d) => d.issue_id)).size;
+    };
+    const countBefore = await reviewedCount();
+    await setDecision(anna, userId, issueId, "needs_correction"); // switch again
+    const countAfter = await reviewedCount();
+    check("switch keeps the reviewed count unchanged", countBefore === 1 && countAfter === 1, `${countBefore}->${countAfter}`);
+
+    // The DATABASE GUARD blocks decision writes while the review is busy; the app
+    // maps that to a friendly message and the stored decision is UNCHANGED.
+    const current = async () => (await anna.from("review_decisions").select("decision").eq("issue_id", issueId)).data?.[0]?.decision;
+    const before = await current();
+
+    await admin.from("reviews").update({ processing_status: "processing", op_token: randomUUID(), op_heartbeat_at: new Date().toISOString(), op_failed_at: null }).eq("id", reviewId);
+    const blockedP = await setDecision(anna, userId, issueId, "investigate");
+    check("blocked while processing: friendly error", blockedP.status === "error" && /check is running/.test(blockedP.message), JSON.stringify(blockedP));
+    check("blocked while processing: stored decision unchanged", (await current()) === before);
+
+    await admin.from("reviews").update({ processing_status: "deleting", op_token: randomUUID(), op_heartbeat_at: new Date().toISOString(), op_failed_at: null }).eq("id", reviewId);
+    const blockedD = await setDecision(anna, userId, issueId, "investigate");
+    check("blocked while deleting: friendly error", blockedD.status === "error" && /being deleted/.test(blockedD.message), JSON.stringify(blockedD));
+    check("blocked while deleting: stored decision unchanged", (await current()) === before);
+
+    // Restore to complete -> writes are allowed again (also leaves it cleanable).
+    await admin.from("reviews").update({ processing_status: "complete", op_token: null, op_heartbeat_at: null, op_failed_at: null }).eq("id", reviewId);
+    const allowedAgain = await setDecision(anna, userId, issueId, "investigate");
+    check("allowed again once complete", allowedAgain.status === "saved", JSON.stringify(allowedAgain));
   } finally {
     try {
       if (uploaded.length) await admin.storage.from(REVIEW_FILES_BUCKET).remove(uploaded);
     } catch (e) {
       console.error("cleanup storage:", (e as Error).message);
+    }
+    try {
+      const { data: revs } = await admin.from("reviews").select("id, user_id").eq("user_id", userId);
+      for (const r of revs ?? []) {
+        await admin.from("review_file_cleanups").insert({ user_id: r.user_id, review_id: r.id, prefix: `${r.user_id}/${r.id}` });
+        await admin.from("reviews").delete().eq("id", r.id);
+      }
+    } catch (e) {
+      console.error("cleanup reviews:", (e as Error).message);
     }
     try {
       await admin.auth.admin.deleteUser(userId);

@@ -22,8 +22,10 @@ export default function RunCheckButton({ reviewId }: { reviewId: string }) {
     startTransition(async () => {
       const r = await runCheckAction(reviewId);
       setResult(r);
-      if (r.status === "complete") {
-        router.refresh(); // re-render the page so the status reflects "complete"
+      if (r.status === "complete" || r.status === "uncertain") {
+        // Refresh so the page reflects the true status: "complete" on success, or
+        // the review's current state after an uncertain (unconfirmed) save.
+        router.refresh();
       }
     });
   }
@@ -45,6 +47,12 @@ export default function RunCheckButton({ reviewId }: { reviewId: string }) {
       )}
       {result?.status === "error" && (
         <Alert severity="error" role="alert">
+          {result.message}
+        </Alert>
+      )}
+      {result?.status === "uncertain" && (
+        // NOT a confirmed failure: the save outcome is unknown. Warning, not error.
+        <Alert severity="warning" role="status">
           {result.message}
         </Alert>
       )}

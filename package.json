@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "tsx scripts/ci/quotation-scenarios.test.mts && tsx scripts/ci/turn-matching.test.mts && tsx scripts/ci/result-state.test.mts"
   },
   "dependencies": {
     "@emotion/cache": "^11.13.5",
@@ -24,7 +26,10 @@
     "@types/node": "^22.10.1",
     "@types/react": "^19.0.1",
     "@types/react-dom": "^19.0.1",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^15.5.29",
     "supabase": "^3.0.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.2"
   }
 }

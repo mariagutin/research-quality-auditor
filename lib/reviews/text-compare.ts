@@ -104,6 +104,82 @@ export function contiguousContains(hay: string[], needle: string[]): boolean {
   return false;
 }
 
+// Locate where a quotation best "fits" inside a (possibly long) passage, as a
+// contiguous window of the passage's words -- used so near-matching compares the
+// quote against the local region it resembles, not the whole turn (a long turn
+// would dilute the score, and a stray matching word far away would stretch the
+// candidate). This is a FITTING alignment: the WHOLE needle is aligned, the hay's
+// start/end are free. Scoring MATCH=+4, MISMATCH=0, GAP=-1 chosen so GAP < MISMATCH
+// < MATCH + 3*GAP, which keeps BOTH:
+//   - a terminal substitution in the window ("time" vs "hours"), since a mismatch
+//     is cheaper than dropping the word (MISMATCH > GAP); and
+//   - a short internal insertion spanned to a real later match ("a lot of" between
+//     "me" and "time"), since spanning beats substitute-and-truncate.
+// A distant stray match is still excluded (many gaps outweigh one match). Ties on
+// the end column prefer the longer span. See ADR-0006.
+export function fittingWindow(
+  needle: string[],
+  hay: string[],
+): { start: number; end: number } | null {
+  const L = needle.length;
+  const N = hay.length;
+  if (L === 0 || N === 0) return null;
+  const MATCH = 4;
+  const MISM = 0;
+  const GAP = -1;
+  const dp: number[][] = Array.from({ length: L + 1 }, () => new Array(N + 1).fill(0));
+  for (let i = 1; i <= L; i++) dp[i][0] = dp[i - 1][0] + GAP; // needle prefix vs nothing
+  // dp[0][j] stays 0: the alignment may start anywhere in the hay (free start).
+  for (let i = 1; i <= L; i++) {
+    for (let j = 1; j <= N; j++) {
+      const s = needle[i - 1] === hay[j - 1] ? MATCH : MISM;
+      dp[i][j] = Math.max(dp[i - 1][j - 1] + s, dp[i - 1][j] + GAP, dp[i][j - 1] + GAP);
+    }
+  }
+  // Best end column for a full-needle alignment; `>=` prefers the LARGER j on ties.
+  let best = -Infinity;
+  let bj = 0;
+  for (let j = 1; j <= N; j++) {
+    if (dp[L][j] >= best) {
+      best = dp[L][j];
+      bj = j;
+    }
+  }
+  // Traceback to i==0, collecting the hay indices the needle aligned to.
+  let i = L;
+  let j = bj;
+  const cols: number[] = [];
+  while (i > 0) {
+    if (j === 0) {
+      i--; // remaining needle words are leading gaps
+      continue;
+    }
+    const s = needle[i - 1] === hay[j - 1] ? MATCH : MISM;
+    if (dp[i][j] === dp[i - 1][j - 1] + s) {
+      cols.push(j - 1);
+      i--;
+      j--;
+    } else if (dp[i][j] === dp[i - 1][j] + GAP) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+  if (cols.length === 0) return null;
+  return { start: Math.min(...cols), end: Math.max(...cols) };
+}
+
+// The best-fitting window plus its similarity (the value compared to the near-match
+// threshold). Returns null when there is no alignment at all.
+export function bestWindow(
+  needle: string[],
+  hay: string[],
+): { start: number; end: number; score: number } | null {
+  const w = fittingWindow(needle, hay);
+  if (!w) return null;
+  return { ...w, score: similarity(needle, hay.slice(w.start, w.end + 1)) };
+}
+
 export interface DiffSeg {
   text: string; // verbatim slice
   changed: boolean; // true when this word is not shared (added/removed/substituted)

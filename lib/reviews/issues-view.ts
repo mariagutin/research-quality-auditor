@@ -6,7 +6,7 @@
 // The page fetches the rows AS the signed-in user; owner-only RLS means these
 // rows already belong to that researcher.
 
-import { diffSegments, type DiffSeg } from "./text-compare";
+import { diffSegments, fittingWindow, wordNorms, segmentText, type DiffSeg } from "./text-compare";
 import type { DecisionValue } from "./decisions";
 
 export interface QuotationRow {
@@ -78,6 +78,20 @@ export interface IssuesView {
   entries: IssueEntry[];
 }
 
+// The single source of truth for which of the three result states the view is in, so
+// the results page and its test agree. Order matters: zero quotations is distinct from
+// zero issues.
+//   - "no_quotations": the report had no quotations to check (TR-18)
+//   - "no_issues": quotations were checked and all matched, none flagged (TR-17)
+//   - "has_issues": at least one issue to review
+export type ResultState = "no_quotations" | "no_issues" | "has_issues";
+
+export function resultState(view: IssuesView): ResultState {
+  if (view.quotationsChecked === 0) return "no_quotations";
+  if (view.entries.length === 0) return "no_issues";
+  return "has_issues";
+}
+
 // Plain-language chip text per issue type. Unknown types fall back to the raw
 // value so nothing silently disappears.
 function labelFor(issueType: string): string {
@@ -95,8 +109,8 @@ function labelFor(issueType: string): string {
   }
 }
 
-// Drop the "P05:" speaker label from a stored excerpt, leaving the spoken words
-// (used only for the word-by-word diff; the filename and id are shown separately).
+// Drop the first-line "P05:" speaker label from a stored turn, leaving the spoken
+// text (the filename and id are shown separately). Continuation lines are kept.
 function spokenPart(excerpt: string, participantId: string | null): string {
   const colon = excerpt.indexOf(":");
   if (colon >= 0) {
@@ -106,6 +120,37 @@ function spokenPart(excerpt: string, participantId: string | null): string {
     }
   }
   return excerpt;
+}
+
+// Verbatim slice of `text` covering word indices [start, end] inclusive, with the
+// whitespace between those words -- isolates the candidate passage from the turn.
+function sliceWordsVerbatim(text: string, start: number, end: number): string {
+  let w = -1;
+  let inRange = false;
+  const parts: string[] = [];
+  for (const s of segmentText(text)) {
+    if (s.isWord) {
+      w += 1;
+      inRange = w >= start && w <= end;
+      if (inRange) parts.push(s.text);
+    } else if (inRange) {
+      parts.push(s.text);
+    }
+  }
+  return parts.join("");
+}
+
+// The whole turn as diff segments, but with `changed` set ONLY for words inside the
+// candidate window [start, end]; every word outside it is plain, unhighlighted
+// context -- so surrounding text is never shown as a wording change.
+function highlightWindow(text: string, start: number, end: number, candChanged: boolean[]): DiffSeg[] {
+  let w = -1;
+  return segmentText(text).map((s) => {
+    if (!s.isWord) return { text: s.text, changed: false };
+    w += 1;
+    const changed = w >= start && w <= end ? (candChanged[w - start] ?? false) : false;
+    return { text: s.text, changed };
+  });
 }
 
 export function buildIssuesView(args: {
@@ -133,8 +178,25 @@ export function buildIssuesView(args: {
     const filename = filenameById.get(issue.source_document_id) ?? "";
     const participantId = participantById.get(issue.source_document_id) ?? null;
     if (issue.issue_type === "wording_mismatch") {
-      const diff = diffSegments(quote, spokenPart(issue.source_excerpt, participantId));
-      return { kind: "diff", filename, participantId, report: diff.a, transcript: diff.b };
+      // The stored excerpt is the FULL participant turn. Highlight differences only
+      // within the best-fitting candidate window, recomputed here with the SAME
+      // fitting alignment used to score the match; show the rest of the turn as
+      // plain context. So the report word ("time") and the source word ("hours")
+      // are highlighted against each other, and unrelated context is not.
+      const spoken = spokenPart(issue.source_excerpt, participantId);
+      const win = fittingWindow(wordNorms(quote), wordNorms(spoken));
+      if (!win) {
+        const diff = diffSegments(quote, spoken);
+        return { kind: "diff", filename, participantId, report: diff.a, transcript: diff.b };
+      }
+      const candidate = sliceWordsVerbatim(spoken, win.start, win.end);
+      const diff = diffSegments(quote, candidate);
+      const candChanged: boolean[] = [];
+      segmentText(candidate).forEach((s, i) => {
+        if (s.isWord) candChanged.push(diff.b[i].changed);
+      });
+      const transcript = highlightWindow(spoken, win.start, win.end, candChanged);
+      return { kind: "diff", filename, participantId, report: diff.a, transcript };
     }
     return { kind: "plain", filename, excerpt: issue.source_excerpt };
   };

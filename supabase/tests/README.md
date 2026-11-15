@@ -186,6 +186,43 @@ docker exec -i supabase_db_research-quality-auditor \
   -f - < supabase/tests/review_files_storage_test.sql
 ```
 
+## `scripts/storage-isolation.local-test.mts` — end-to-end two-user Storage test
+
+Complements `review_files_storage_test.sql`. The SQL test exercises the RLS
+predicates on `storage.objects` directly but **cannot drive the real Storage API
+delete path** — a statement-level `protect_delete` trigger blocks every *direct SQL*
+delete (it allows a delete only when the Storage API sets `storage.allow_delete_query`
+after its own owner check). This script closes that gap by driving the **real Storage
+HTTP API** as two separate signed-in users (A = owner, B = attacker).
+
+It proves the guarantee **User B cannot download or delete User A's files**, and
+crucially **judges deletion by whether A's file survives** — not by B's response
+status, because an unauthorized Storage delete can return success while removing
+nothing (observed here: `error=none`, 0 objects removed). Checks that passed:
+
+1. **Positive control** — A uploads a synthetic file into A's own folder and
+   downloads it back byte-for-byte.
+2. **No listing** — B cannot list A's folder (owner-only SELECT → 0 entries).
+3. **No download** — B cannot download A's file (no bytes returned).
+4. **No deletion (survival-judged)** — after B's delete attempt: (4a) A re-downloads
+   the file with **identical bytes**; (4b) an admin listing (service role bypasses
+   Storage RLS) still shows the object; (4c) B's delete removed **0** objects.
+
+This is a Node/`tsx` script (not a psql test), so run it from the repo root:
+
+```sh
+npx tsx scripts/storage-isolation.local-test.mts
+```
+
+- **Local only.** It resolves keys from `npx supabase status` and **refuses to run
+  unless `SUPABASE_URL` is `127.0.0.1`/`localhost`** — never hosted.
+- **Synthetic only, self-cleaning.** It creates two throwaway `@synthetic.test` users
+  and one synthetic file, then deletes the file, the review, and both users in a
+  `finally` block. The local service-role key (from `supabase status`) is used only
+  in-process to create/clean up the synthetic users; it is never printed or committed.
+- A clean run prints `PASS:` lines and ends with `ALL STORAGE-ISOLATION CHECKS
+  PASSED` (exit 0); any failed check exits non-zero.
+
 ### Reading the result
 
 - A clean run prints a series of `PASS:` / `SETUP:` notices, ends with

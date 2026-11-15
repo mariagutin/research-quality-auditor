@@ -10,6 +10,7 @@ import Typography from "@mui/material/Typography";
 import Chip from "@mui/material/Chip";
 import Button from "@mui/material/Button";
 import { createClient } from "@/lib/supabase/server";
+import { resumePendingDeletions } from "@/lib/reviews/delete-review";
 
 const DATE_FORMAT = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" });
 
@@ -25,6 +26,14 @@ export default async function ReviewsListPage() {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
+
+  // Owner-driven recovery: finish any interrupted deletions' file cleanup. Best-
+  // effort -- never block or fail the page on it.
+  try {
+    await resumePendingDeletions(supabase, user.id);
+  } catch {
+    /* best-effort cleanup */
+  }
 
   const { data: reviews } = await supabase
     .from("reviews")

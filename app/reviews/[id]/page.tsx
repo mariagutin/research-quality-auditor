@@ -17,9 +17,11 @@ import Divider from "@mui/material/Divider";
 import Alert from "@mui/material/Alert";
 import { createClient } from "@/lib/supabase/server";
 import RunCheckButton from "./run-check-button";
-import { buildIssuesView, type DecisionRow } from "@/lib/reviews/issues-view";
+import { buildIssuesView, resultState, type DecisionRow } from "@/lib/reviews/issues-view";
 import type { DiffSeg } from "@/lib/reviews/text-compare";
 import DecisionControl from "./decision-control";
+import DeleteReviewButton from "./delete-review-button";
+import BusyRefresh from "./busy-refresh";
 
 // A passage rendered verbatim, with differing words highlighted.
 function HighlightedPassage({ segments }: { segments: DiffSeg[] }) {
@@ -71,6 +73,11 @@ export default async function ReviewPage({
 
   const isPreCheck = review.processing_status === "draft";
   const isChecked = review.processing_status === "complete";
+  const isDeleting = review.processing_status === "deleting";
+
+  // Is the review's current operation ACTIVE (vs. a recoverable failed/stale one)?
+  // Computed with DATABASE time, so Delete/Retry gating reflects recoverability.
+  const { data: opActive } = await supabase.rpc("review_op_active", { p_review_id: id });
 
   // Only a completed check has results to show.
   let issuesView = null;
@@ -98,8 +105,16 @@ export default async function ReviewPage({
   }
 
 
+  const isBusy =
+    review.processing_status === "uploading" ||
+    review.processing_status === "processing" ||
+    review.processing_status === "deleting";
+
   return (
     <Box sx={{ maxWidth: 640, mx: "auto", p: 3 }}>
+      {/* While busy, re-fetch the DB-time op state so recovery controls appear after
+          an interruption (and completion is picked up) without a manual reload. */}
+      {isBusy && <BusyRefresh />}
       <Stack spacing={2}>
         <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap">
           <Typography variant="h4" component="h1">
@@ -111,7 +126,9 @@ export default async function ReviewPage({
                 ? "Saved · pre-check"
                 : isChecked
                   ? "Checked"
-                  : review.processing_status
+                  : isDeleting
+                    ? "Deletion in progress"
+                    : review.processing_status
             }
             color={isPreCheck ? "default" : "primary"}
             size="small"
@@ -124,9 +141,27 @@ export default async function ReviewPage({
           </Typography>
         )}
 
-        {/* The check runs once, from the pre-check state. There is no "Run again"
-            after completion, so reviewing never regenerates issues or decisions. */}
-        {!isChecked && <RunCheckButton reviewId={id} />}
+        {isDeleting && (
+          <Typography variant="body2" color="text.secondary">
+            This check is being deleted. Other actions are paused until it finishes.
+          </Typography>
+        )}
+
+        {review.processing_status === "processing" && opActive === true && (
+          <Typography variant="body2" color="text.secondary">
+            A check is running for this review…
+          </Typography>
+        )}
+
+        {/* The check runs once, from the pre-check state (and may be re-run for a
+            recoverable failed/stale check). It is hidden while a check is actively
+            running, while deleting, or while the review is still uploading. */}
+        {!isChecked &&
+          !isDeleting &&
+          review.processing_status !== "uploading" &&
+          !(review.processing_status === "processing" && opActive === true) && (
+            <RunCheckButton reviewId={id} />
+          )}
 
         {issuesView && (
           <>
@@ -134,13 +169,15 @@ export default async function ReviewPage({
             <Typography variant="h6" component="h2">
               Results
             </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {`Checked ${issuesView.quotationsChecked} quotation${
-                issuesView.quotationsChecked === 1 ? "" : "s"
-              } · ${issuesView.totalIssues} issue${
-                issuesView.totalIssues === 1 ? "" : "s"
-              } found`}
-            </Typography>
+            {issuesView.quotationsChecked > 0 && (
+              <Typography variant="body2" color="text.secondary">
+                {`Checked ${issuesView.quotationsChecked} quotation${
+                  issuesView.quotationsChecked === 1 ? "" : "s"
+                } · ${issuesView.totalIssues} issue${
+                  issuesView.totalIssues === 1 ? "" : "s"
+                } found`}
+              </Typography>
+            )}
 
             {issuesView.totalIssues > 0 && (
               <Typography variant="body2" color="text.secondary">
@@ -150,7 +187,11 @@ export default async function ReviewPage({
               </Typography>
             )}
 
-            {issuesView.entries.length === 0 ? (
+            {resultState(issuesView) === "no_quotations" ? (
+              <Alert severity="info" role="status">
+                No quotations found to check. No text in double quotation marks was found in the report.
+              </Alert>
+            ) : resultState(issuesView) === "no_issues" ? (
               <Alert severity="success" role="status">
                 No issues found. Every quotation matched a participant&apos;s transcript.
               </Alert>
@@ -238,6 +279,9 @@ export default async function ReviewPage({
             </ListItem>
           ))}
         </List>
+
+        <Divider />
+        <DeleteReviewButton reviewId={id} status={review.processing_status} opActive={opActive === true} />
 
         <Box>
           <Button component={Link} href="/reviews/new" variant="outlined" size="small">

@@ -390,8 +390,12 @@ async function integration() {
   const transcriptDocId = randomUUID();
   const base = `${annaId}/${reviewId}`;
   const uploaded: string[] = [];
+  // Fixtures upload via the service-role client so they bypass the upload-attempt
+  // policy (which requires an `uploading` review + a token path). This test
+  // exercises runReviewCheck's logic, not that policy; the files live exactly where
+  // the documents' storage_path points, which is what runReviewCheck reads.
   const up = async (path: string, content: string) => {
-    const { error } = await (anna as SupabaseClient).storage
+    const { error } = await admin.storage
       .from(REVIEW_FILES_BUCKET)
       .upload(path, new Blob([content], { type: "text/markdown" }), { upsert: false });
     if (error) throw new Error(`upload ${path}: ${error.message}`);
@@ -421,6 +425,14 @@ async function integration() {
     check("INT: persisted excerpt + attribution", q?.matched_excerpt === "P03: I loved how simple the setup was." && q?.listed_participant_id === "P03", JSON.stringify(q));
     const { data: rev } = await anna.from("reviews").select("processing_status").eq("id", reviewId).maybeSingle();
     check("INT: review marked complete", rev?.processing_status === "complete", JSON.stringify(rev));
+
+    // No re-run: a completed review cannot be checked again (server-enforced).
+    const rerun = await runReviewCheck(anna, annaId, reviewId);
+    check(
+      "INT: a completed review cannot be re-run",
+      rerun.status === "error" && /already been run/.test(rerun.message),
+      JSON.stringify(rerun),
+    );
 
     // Mismatch scenario: report names P03, but the quote is in P05's speech.
     const reviewId2 = randomUUID();
@@ -486,8 +498,54 @@ async function integration() {
     );
     const { data: iss3 } = await anna.from("issues").select("issue_type").eq("review_id", reviewId3);
     check("INT3: participant_mismatch issue", iss3?.[0]?.issue_type === "participant_mismatch", JSON.stringify(iss3));
+
+    // ---- Lease & fence behavior: an active check blocks competing operations;
+    //      an outdated attempt cannot save results or change the current status. ----
+    const activeId = randomUUID();
+    await anna.from("reviews").insert({ id: activeId, user_id: annaId, name: "active-lease" });
+    const tokenA = (await anna.rpc("begin_review_op", { p_review_id: activeId, p_op: "processing" })).data as
+      | string
+      | null;
+    check("LEASE: acquired an active processing lease", !!tokenA, JSON.stringify(tokenA));
+
+    const competing = await runReviewCheck(anna, annaId, activeId);
+    check(
+      "LEASE: an active check blocks a competing check",
+      competing.status === "error" && /already running/.test(competing.message),
+      JSON.stringify(competing),
+    );
+
+    const delTok = (await anna.rpc("begin_review_op", { p_review_id: activeId, p_op: "deleting" })).data;
+    check("LEASE: an active check blocks deletion", delTok === null, JSON.stringify(delTok));
+
+    const bogus = randomUUID();
+    const badSave = await anna.rpc("record_quotation_results", { p_review_id: activeId, p_results: [], p_op_token: bogus });
+    check("LEASE: an outdated token cannot save results", !!badSave.error, JSON.stringify(badSave.error));
+    const afterBadSave = (await anna.from("reviews").select("processing_status").eq("id", activeId).single()).data;
+    check("LEASE: a refused save did not change the status", afterBadSave?.processing_status === "processing");
+
+    const badFail = await anna.rpc("fail_review_op", { p_review_id: activeId, p_token: bogus });
+    check("LEASE: an outdated token cannot fail the check", badFail.data === false, JSON.stringify(badFail));
+    const afterBadFail = (await anna.from("reviews").select("processing_status").eq("id", activeId).single()).data;
+    check("LEASE: a refused fail did not change the status", afterBadFail?.processing_status === "processing");
+
+    const goodSave = await anna.rpc("record_quotation_results", { p_review_id: activeId, p_results: [], p_op_token: tokenA });
+    check("LEASE: the CURRENT token saves and completes", !goodSave.error, JSON.stringify(goodSave.error));
+    const afterGood = (await anna.from("reviews").select("processing_status").eq("id", activeId).single()).data;
+    check("LEASE: the current token completed the review", afterGood?.processing_status === "complete");
   } finally {
     try { if (uploaded.length) await admin.storage.from(REVIEW_FILES_BUCKET).remove(uploaded); } catch (e) { console.error("cleanup storage:", (e as Error).message); }
+    // Reviews must be removed with a cleanup record present (the delete guard), and
+    // before the user is deleted (whose cascade would otherwise trip the guard).
+    try {
+      const { data: revs } = await admin.from("reviews").select("id, user_id").eq("user_id", annaId);
+      for (const r of revs ?? []) {
+        const prefix = `${r.user_id}/${r.id}`;
+        await admin.from("review_file_cleanups").insert({ user_id: r.user_id, review_id: r.id, prefix });
+        await admin.from("reviews").delete().eq("id", r.id);
+        await admin.from("review_file_cleanups").delete().eq("user_id", r.user_id).eq("prefix", prefix);
+      }
+    } catch (e) { console.error("cleanup reviews:", (e as Error).message); }
     try { await admin.auth.admin.deleteUser(annaId); } catch (e) { console.error("cleanup user:", (e as Error).message); }
   }
 }
