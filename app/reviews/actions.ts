@@ -16,7 +16,7 @@ import {
 import { runReviewCheck, type RunCheckResult } from "@/lib/reviews/run-check";
 import { setDecision, type DecisionValue, type SetDecisionResult } from "@/lib/reviews/decisions";
 import { deleteReview, type DeleteReviewResult } from "@/lib/reviews/delete-review";
-import { cleanupDeadAttempts, cleanupPending } from "@/lib/reviews/upload-cleanup";
+import { cleanupDeadAttempts, cleanupPending, removeAttemptFolder } from "@/lib/reviews/upload-cleanup";
 
 // Creates the review row (status `uploading`) BEFORE any file is sent, and returns
 // its id and lease token. The browser uploads under {uid}/{reviewId}/{opToken}/...
@@ -99,6 +99,25 @@ export async function failUploadAction(reviewId: string, opToken: string): Promi
   } = await supabase.auth.getUser();
   if (!user) return;
   await supabase.rpc("fail_review_op", { p_review_id: reviewId, p_token: opToken });
+}
+
+// Remove ONLY the files of ONE rejected upload attempt, by its exact token folder
+// {uid}/{reviewId}/{opToken}/. Used after a file_rejected finish: the attempt is
+// failed (fail_review_op) and we clean its own files without deleting the whole
+// review. removeAttemptFolder targets a single named token folder and never "all but
+// the current", so a concurrent reclaim (which always uses a NEW token) is never
+// touched. Best-effort; the whole-prefix cleanup on an eventual delete is the backstop.
+export async function cleanupRejectedAttemptAction(
+  reviewId: string,
+  opToken: string,
+): Promise<{ ok: boolean }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false };
+  const res = await removeAttemptFolder(supabase, user.id, reviewId, opToken);
+  return { ok: res.ok };
 }
 
 // Refresh the upload lease's activity (heartbeat) while a long upload is in flight.

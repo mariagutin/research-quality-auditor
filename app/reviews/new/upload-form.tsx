@@ -29,6 +29,7 @@ import LinearProgress from "@mui/material/LinearProgress";
 import { createClient } from "@/lib/supabase/client";
 import {
   beginUploadAction,
+  cleanupRejectedAttemptAction,
   cleanupUploadAction,
   failUploadAction,
   finishSaveAction,
@@ -39,7 +40,7 @@ import type { FinishSaveResult } from "@/lib/reviews/finish-save";
 
 const BUCKET = "review-files";
 
-type Picked = { file: File; error?: string };
+type Picked = { key: string; file: File; error?: string };
 type Transcript = { key: string; file: File; participantId: string; error?: string };
 
 type Phase =
@@ -108,7 +109,7 @@ export default function UploadForm() {
 
   function onPickReport(file?: File) {
     if (!file) return;
-    setReport({ file, error: validateFile(file) });
+    setReport({ key: crypto.randomUUID(), file, error: validateFile(file) });
     invalidateSave();
   }
 
@@ -147,10 +148,37 @@ export default function UploadForm() {
     return transcripts.every((t) => !t.error && t.participantId.trim().length > 0);
   }, [acknowledged, report, transcripts]);
 
-  function markRejectedFile(filename: string) {
+  // Flag the EXACT file the server rejected, by its stable per-row id (the report or
+  // one specific transcript) -- never by filename, which can collide.
+  function markRejectedFile(documentId: string) {
+    setReport((prev) => (prev && prev.key === documentId ? { ...prev, error: "Replace this file." } : prev));
     setTranscripts((prev) =>
-      prev.map((t) => (t.file.name === filename ? { ...t, error: "Replace this file." } : t)),
+      prev.map((t) => (t.key === documentId ? { ...t, error: "Replace this file." } : t)),
     );
+  }
+
+  // A rejected upload must NOT be left as a silently-active 'uploading' review. We
+  // fail THIS attempt (fail_review_op is token-fenced: a no-op if another tab already
+  // reclaimed the review) so it reads as failed/recoverable, then clean just this
+  // attempt's files with the existing attempt-specific sweep -- which targets only
+  // {uid}/{reviewId}/{token}/ and never another attempt's folder, so a concurrent
+  // reclaim is never clobbered. We do NOT delete the whole review (there is no atomic
+  // ownership-confirmed delete); the owner can delete the recoverable draft, and the
+  // whole-prefix cleanup backs it on an eventual delete.
+  async function handleFileRejected(
+    rid: string,
+    tok: string,
+    result: Extract<FinishSaveResult, { status: "file_rejected" }>,
+  ) {
+    await failUploadAction(rid, tok);
+    await cleanupRejectedAttemptAction(rid, tok);
+    markRejectedFile(result.documentId);
+    // Replacing the flagged file starts a fresh save (our "changed inputs = new save"
+    // rule); the failed attempt stays recoverable until the owner deletes it.
+    setReviewId(null);
+    setOpToken(null);
+    setNeedsFullRetry(false);
+    setPhase({ kind: "result", result });
   }
 
   async function onSave() {
@@ -170,15 +198,16 @@ export default function UploadForm() {
       }
 
       const files = [
-        { role: "report" as const, file: report.file, filename: report.file.name, participantId: null as string | null },
+        { role: "report" as const, file: report.file, filename: report.file.name, participantId: null as string | null, clientId: report.key },
         ...transcripts.map((t) => ({
           role: "transcript" as const,
           file: t.file,
           filename: t.file.name,
           participantId: t.participantId.trim(),
+          clientId: t.key,
         })),
       ];
-      const documents = files.map((f) => ({ role: f.role, filename: f.filename, participantId: f.participantId }));
+      const documents = files.map((f) => ({ role: f.role, filename: f.filename, participantId: f.participantId, clientId: f.clientId }));
 
       const finish = async (rid: string, tok: string): Promise<FinishSaveResult> => {
         try {
@@ -207,11 +236,7 @@ export default function UploadForm() {
           return;
         }
         if (reconciled.status === "file_rejected") {
-          markRejectedFile(reconciled.filename);
-          setReviewId(null);
-          setOpToken(null);
-          setNeedsFullRetry(false);
-          setPhase({ kind: "result", result: reconciled });
+          await handleFileRejected(reviewId, opToken, reconciled);
           return;
         }
         // upload_incomplete / uncertain / invalid: fall through to (clean +) re-
@@ -292,10 +317,8 @@ export default function UploadForm() {
         return;
       }
       if (result.status === "file_rejected") {
-        markRejectedFile(result.filename);
-        setReviewId(null);
-        setOpToken(null);
-        setNeedsFullRetry(false);
+        await handleFileRejected(rid, tok, result);
+        return;
       }
       if (result.status === "conflict") {
         setReviewId(null);

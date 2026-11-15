@@ -41,6 +41,12 @@ export interface DocumentInput {
   filename: string;
   /** Required (non-blank) for transcripts; ignored for the report. */
   participantId?: string | null;
+  /**
+   * Stable per-row id from the client, echoed back on rejection so the UI can flag
+   * the EXACT file (not every file that happens to share a name). Optional for
+   * non-UI callers; defaults to the filename.
+   */
+  clientId?: string;
 }
 
 export interface FinishSaveInput {
@@ -61,7 +67,7 @@ export type FinishSaveResult =
   // A file uploaded but its contents are not usable (unreadable, empty, or a
   // transcript missing its confirmed speaker label). UI: replace the file or
   // correct the participant id -- which starts a NEW save (new review id).
-  | { status: "file_rejected"; message: string; filename: string }
+  | { status: "file_rejected"; message: string; filename: string; documentId: string; role: DocumentRole }
   // The id exists with different files; not this save.
   | { status: "conflict"; message: string }
   // Outcome unknown (timeout/transient). UI: "We couldn't confirm your save.
@@ -74,6 +80,7 @@ interface ExpectedDocument {
   filename: string;
   storage_path: string;
   participant_id: string | null;
+  clientId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +166,7 @@ function buildExpected(
       // Per-attempt token subfolder: {uid}/{reviewId}/{opToken}/{filename}.
       storage_path: `${userId}/${reviewId}/${opToken}/${filename}`,
       participant_id: d.role === "transcript" ? (d.participantId ?? "").trim() : null,
+      clientId: d.clientId ?? filename,
     };
   });
   const report = expected.find((d) => d.role === "report")!;
@@ -208,6 +216,9 @@ async function loadExistingReview(
     filename: d.filename as string,
     storage_path: d.storage_path as string,
     participant_id: (d.participant_id as string | null) ?? null,
+    // Not sent by the client for stored rows and never compared (see documentKey);
+    // a filename default keeps the shape without affecting documentsMatch.
+    clientId: d.filename as string,
   }));
   return {
     exists: true,
@@ -225,7 +236,7 @@ type VerifyResult =
   // Expected files that are not present in Storage -> an interrupted upload.
   | { ok: false; kind: "missing"; message: string; missing: string[] }
   // A present file whose contents are not usable -> must be replaced/corrected.
-  | { ok: false; kind: "rejected"; message: string; filename: string };
+  | { ok: false; kind: "rejected"; message: string; filename: string; clientId: string; role: DocumentRole };
 
 /**
  * Verify every expected file is present under the review's folder AND that its
@@ -265,13 +276,15 @@ async function verifyFiles(
         ok: false,
         kind: "rejected",
         filename: doc.filename,
+        clientId: doc.clientId,
+        role: doc.role,
         message: `${doc.filename} could not be read: ${downloadError?.message ?? "no data"}.`,
       };
     }
 
     const bytes = await blob.arrayBuffer();
     if (bytes.byteLength === 0) {
-      return { ok: false, kind: "rejected", filename: doc.filename, message: `${doc.filename} is empty.` };
+      return { ok: false, kind: "rejected", filename: doc.filename, clientId: doc.clientId, role: doc.role, message: `${doc.filename} is empty.` };
     }
 
     let text: string;
@@ -282,6 +295,8 @@ async function verifyFiles(
         ok: false,
         kind: "rejected",
         filename: doc.filename,
+        clientId: doc.clientId,
+        role: doc.role,
         message: `${doc.filename} is not readable text.`,
       };
     }
@@ -290,6 +305,8 @@ async function verifyFiles(
         ok: false,
         kind: "rejected",
         filename: doc.filename,
+        clientId: doc.clientId,
+        role: doc.role,
         message: `${doc.filename} has no readable content.`,
       };
     }
@@ -305,6 +322,8 @@ async function verifyFiles(
           ok: false,
           kind: "rejected",
           filename: doc.filename,
+          clientId: doc.clientId,
+          role: doc.role,
           message: `${doc.filename} has no "${doc.participant_id}:" speaker label.`,
         };
       }
@@ -316,6 +335,8 @@ async function verifyFiles(
           ok: false,
           kind: "rejected",
           filename: doc.filename,
+          clientId: doc.clientId,
+          role: doc.role,
           message: `${doc.filename} has an unexpected "${conflict}:" speaker label; a transcript may use only "${doc.participant_id}:" and "Moderator:".`,
         };
       }
@@ -383,7 +404,13 @@ export async function finishReviewSave(
       return { status: "upload_incomplete", message: verification.message, missing: verification.missing };
     }
     if (verification.kind === "rejected") {
-      return { status: "file_rejected", message: verification.message, filename: verification.filename };
+      return {
+        status: "file_rejected",
+        message: verification.message,
+        filename: verification.filename,
+        documentId: verification.clientId,
+        role: verification.role,
+      };
     }
     // list_error -> transient: keep files, let the researcher retry.
     return {

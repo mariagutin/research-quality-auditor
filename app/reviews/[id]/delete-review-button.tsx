@@ -51,6 +51,7 @@ export default function DeleteReviewButton({
   reviewId,
   status,
   opActive,
+  statusUnavailable = false,
 }: {
   reviewId: string;
   status: string;
@@ -58,6 +59,9 @@ export default function DeleteReviewButton({
   // not stale) -- computed server-side with DATABASE time. A recoverable (failed or
   // stale) operation is NOT active, so Delete/Retry are enabled appropriately.
   opActive: boolean;
+  // The op status couldn't be loaded (review_op_active errored). Fail-safe: disable
+  // Delete/Retry rather than risk acting during an operation we can't see.
+  statusUnavailable?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -99,7 +103,7 @@ export default function DeleteReviewButton({
           variant="outlined"
           size="small"
           onClick={run}
-          disabled={pending || deletionActive}
+          disabled={pending || deletionActive || statusUnavailable}
           sx={{ alignSelf: "flex-start" }}
         >
           {pending ? "Retrying…" : "Retry delete"}
@@ -121,11 +125,16 @@ export default function DeleteReviewButton({
         variant="outlined"
         size="small"
         onClick={() => setOpen(true)}
-        disabled={pending || deleteBlockedByActive}
+        disabled={pending || deleteBlockedByActive || statusUnavailable}
         sx={{ alignSelf: "flex-start" }}
       >
         {pending ? "Deleting…" : "Delete this check"}
       </Button>
+      {statusUnavailable && !deleteBlockedByActive && (
+        <Typography variant="caption" color="text.secondary">
+          Delete is paused until this review&apos;s status loads.
+        </Typography>
+      )}
       {deleteBlockedByActive && (
         <Typography variant="caption" color="text.secondary">
           {status === "processing"

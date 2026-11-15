@@ -18,10 +18,12 @@ import Alert from "@mui/material/Alert";
 import { createClient } from "@/lib/supabase/server";
 import RunCheckButton from "./run-check-button";
 import { buildIssuesView, resultState, type DecisionRow } from "@/lib/reviews/issues-view";
+import { actionGating } from "@/lib/reviews/action-gating";
 import type { DiffSeg } from "@/lib/reviews/text-compare";
 import DecisionControl from "./decision-control";
 import DeleteReviewButton from "./delete-review-button";
 import BusyRefresh from "./busy-refresh";
+import RetryStatus from "./retry-status";
 
 // A passage rendered verbatim, with differing words highlighted.
 function HighlightedPassage({ segments }: { segments: DiffSeg[] }) {
@@ -76,8 +78,15 @@ export default async function ReviewPage({
   const isDeleting = review.processing_status === "deleting";
 
   // Is the review's current operation ACTIVE (vs. a recoverable failed/stale one)?
-  // Computed with DATABASE time, so Delete/Retry gating reflects recoverability.
-  const { data: opActive } = await supabase.rpc("review_op_active", { p_review_id: id });
+  // Computed with DATABASE time, so Delete/Retry gating reflects recoverability. If
+  // the RPC errors we must NOT assume "not active" (that would permissively enable
+  // Delete / Run check during a live op) -- `actionGating` fails safe on the error.
+  const { data: opActive, error: opActiveError } = await supabase.rpc("review_op_active", { p_review_id: id });
+  const gate = actionGating({
+    status: review.processing_status,
+    opActive: opActive === true,
+    opStatusUnavailable: !!opActiveError,
+  });
 
   // Only a completed check has results to show.
   let issuesView = null;
@@ -147,21 +156,23 @@ export default async function ReviewPage({
           </Typography>
         )}
 
-        {review.processing_status === "processing" && opActive === true && (
+        {gate.showRunningMessage && (
           <Typography variant="body2" color="text.secondary">
             A check is running for this review…
           </Typography>
         )}
 
+        {gate.statusUnavailable && (
+          <Alert severity="warning" role="status" action={<RetryStatus />}>
+            We couldn&apos;t load this review&apos;s current status. Actions are paused until it loads — retry.
+          </Alert>
+        )}
+
         {/* The check runs once, from the pre-check state (and may be re-run for a
             recoverable failed/stale check). It is hidden while a check is actively
-            running, while deleting, or while the review is still uploading. */}
-        {!isChecked &&
-          !isDeleting &&
-          review.processing_status !== "uploading" &&
-          !(review.processing_status === "processing" && opActive === true) && (
-            <RunCheckButton reviewId={id} />
-          )}
+            running, while deleting, while uploading, or while the op status can't be
+            loaded (fail-safe -- see actionGating). */}
+        {gate.showRunCheck && <RunCheckButton reviewId={id} />}
 
         {issuesView && (
           <>
@@ -281,7 +292,12 @@ export default async function ReviewPage({
         </List>
 
         <Divider />
-        <DeleteReviewButton reviewId={id} status={review.processing_status} opActive={opActive === true} />
+        <DeleteReviewButton
+          reviewId={id}
+          status={review.processing_status}
+          opActive={opActive === true}
+          statusUnavailable={gate.statusUnavailable}
+        />
 
         <Box>
           <Button component={Link} href="/reviews/new" variant="outlined" size="small">
