@@ -1,5 +1,6 @@
 ---
 name: ux-review
+description: Reviews user interfaces for usability problems using Nielsen's 10 usability heuristics. Use when reviewing UI screenshots, mockups, or front-end application code for usability issues, UX problems, or heuristic evaluation.
 ---
 
 # UX Review
