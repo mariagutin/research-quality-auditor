@@ -125,5 +125,19 @@ transcript); run a check; confirm owner-only isolation with a second account.
 
 ## Status
 
-- Read-only review complete; **hosted unchanged**. No commit, push, or deployment made.
-- Blocking item before step 1: Maria's explicit authorization to apply to hosted.
+**Original review (2026-11-15, read-only):** complete; hosted was unchanged at the time
+of review. No commit, push, or deployment made during the review itself.
+
+**Update — applied and deployed (2026-11-15, with Maria's authorization):**
+- The **7 pending migrations were applied** to hosted `czrjqgxmtpdxfkohwlkh` via
+  `npx supabase db push --remote --yes`. `migration list --remote` afterward shows all
+  **11 of 11** migrations applied, 0 pending. A read-only spot-check confirmed the
+  private `review-files` bucket, the `matched_*`/`source_*` evidence fields, both new
+  CHECK constraints, the two lifecycle tables, the lifecycle/upload functions, and the
+  `uploading` status value all present.
+- The app was **deployed to Vercel** at https://research-quality-auditor.vercel.app,
+  with custom SMTP (Resend) for confirmation emails. Live manual verification results are
+  recorded in [`hosted-verification.md`](./hosted-verification.md).
+- **Env var note:** step 3 above names `NEXT_PUBLIC_SUPABASE_ANON_KEY`, but the app code
+  actually reads **`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`** (plus `NEXT_PUBLIC_SUPABASE_URL`).
+  The secret / service_role key is never set.
