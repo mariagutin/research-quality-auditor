@@ -539,9 +539,12 @@ function, the private `review-files` Storage bucket, and issue source-evidence.)
   dedicated `acknowledgments` table (user_id, acknowledged_at, policy_version), or
   fields on `reviews`, or enforcing it only in the app. This stays open alongside
   the other open decisions in `docs/architecture.md`.
-- All other open items from `docs/architecture.md` remain open: AI provider/model,
-  per-quote classification cutoff, quality acceptance targets, upload limits,
-  processing shape, and retention/backup policy.
+- **AI provider/model is no longer an open MVP #1 item.** Resolved by **ADR-0010**:
+  MVP #1's quotation and participant checks are rule-based with no external AI; AI is
+  only **to be evaluated for a later release**, so it does not gate MVP #1.
+- Other open items from `docs/architecture.md` remain open: per-quote classification
+  cutoff, quality acceptance targets, upload limits, processing shape, and
+  retention/backup policy.
 
 **Assumptions made in this draft (confirm before the migration):**
 
@@ -596,7 +599,8 @@ function, the private `review-files` Storage bucket, and issue source-evidence.)
 > for retry; database records are cascaded only after every file is gone (see Deleting a
 > review and its data). A per-file progress flag stays an optional future optimization.
 
-_No open questions remain in this document. Remaining open items live in
-`docs/architecture.md` (AI provider/model, per-quote classification cutoff, quality
-targets, upload limits, processing shape, retention/backup) and the acknowledgment-
-persistence product decision noted above._
+_No open questions remain in this document. AI provider/model is resolved for MVP #1
+by **ADR-0010** (rule-based checking; AI only to be evaluated for a later release).
+Remaining open items live in `docs/architecture.md` (per-quote classification cutoff,
+quality targets, upload limits, processing shape, retention/backup) and the
+acknowledgment-persistence product decision noted above._

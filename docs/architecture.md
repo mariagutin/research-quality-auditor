@@ -48,7 +48,7 @@ automatic correction, issue-specific AI chat, and any file format other than
 │  - Access checks (owner-only)                                          │
 │  - Upload validation (.md only, non-empty, readable)                   │
 │  - Speaker-label validation against confirmed participant ID          │
-│  - Quotation extraction + candidate-passage lookup (AI-assisted)      │
+│  - Quotation extraction + candidate-passage lookup (rule-based)       │
 │  - Evidence verification: returned excerpts checked against source    │
 │  - Issue creation, results, and decision persistence                  │
 │  Holds all privileged credentials and AI API keys (never in browser). │
@@ -57,7 +57,7 @@ automatic correction, issue-specific AI chat, and any file format other than
        │ owner-only RLS + storage policies)       │
        ▼                                          ▼
 ┌──────────────────────────────┐      ┌──────────────────────────────────┐
-│  Tier 3 — Supabase           │      │  AI provider (Open decision)      │
+│  Tier 3 — Supabase           │      │  AI provider (deferred)           │
 │  - Auth (accounts)           │      │  Assists extraction + finds       │
 │  - PostgreSQL + RLS (records)│      │  candidate passages. Server       │
 │  - Storage (private .md)     │      │  verifies everything it returns.  │
@@ -128,27 +128,29 @@ to the database or the AI provider directly. Responsibilities:
 - **Comparison.** Compare each quotation against participant-labeled speech
   across all uploaded transcripts, checking wording and participant identity
   (TR-08).
-- **Evidence verification.** The AI provider assists with extraction and with
-  finding candidate passages, but **server code verifies that every returned
-  excerpt actually appears in the original source text** before it is stored or
-  shown. Nothing is invented; a quote with no corresponding passage yields a
-  no-match result (TR-08, TR-09, NFR-04).
+- **Evidence verification.** **Server code verifies that every returned excerpt
+  actually appears in the original source text** before it is stored or shown.
+  Nothing is invented; a quote with no corresponding passage yields a no-match
+  result (TR-08, TR-09, NFR-04). *In MVP #1 extraction and candidate-passage lookup
+  are **rule-based**, with no external AI (ADR-0010); the AI-assisted variant of this
+  bullet is a deferred, later-release direction (Open Decision #1).*
 - **Persistence and errors.** Create issue records, save results and decisions,
   report processing status, and on failure allow retry without re-uploading;
   never present a failed or incomplete check as "No issues found"
   (TR-13, TR-14, NFR-05).
 
-> **Current implementation (MVP) — server-side text comparison, no external AI.**
-> The checker today runs **entirely as server-side text comparison**: straight
-> double-quoted quotations are extracted from the report and matched — exact first,
-> then a lexical near-match — against participant-labeled transcript speech
-> (Moderator excluded); every excerpt shown is a real transcript line, so nothing is
-> invented. **No external AI provider is used** — there are no AI dependencies and
-> no external/AI calls (`lib/reviews/run-check.ts`, `lib/reviews/text-compare.ts`;
-> only Supabase storage/DB are contacted). The AI-assisted extraction / candidate
-> lookup described in the "Evidence verification" bullet above remains the **open
-> decision** recorded below: this note states **what is built today** and is **not**
-> a decision to include or exclude AI.
+> **MVP #1 decision (ADR-0010) — rule-based text comparison, no external AI.**
+> MVP #1's quotation and participant checks run **entirely as server-side, rule-based
+> text comparison**: straight double-quoted quotations are extracted from the report
+> and matched — exact first, then a lexical near-match — against participant-labeled
+> transcript speech (Moderator excluded); every excerpt shown is a real transcript
+> line, so nothing is invented. **No external AI provider is used** — there are no AI
+> dependencies and no external/AI calls (`lib/reviews/run-check.ts`,
+> `lib/reviews/text-compare.ts`; only Supabase storage/DB are contacted). The
+> AI-assisted extraction / candidate lookup described in the "Evidence verification"
+> bullet above is **deferred to a later release** (see Open Decision #1 below and
+> **ADR-0010**); it is **not** part of MVP #1. This is a settled decision, not a
+> provisional state.
 >
 > *Against the quotation-verification requirements, the current checker:*
 > - **Meets** — comparison of wording **and** participant identity across all
@@ -263,9 +265,10 @@ researcher has an account and is signed in.
    files remain stored, so a failed check can be retried without re-uploading.
    *(TR-03, TR-13, NFR-09)*
 
-6. **Extract quotations.** The server (AI-assisted) identifies direct participant
-   quotations in `report.md`, preserving wording and capturing each listed
-   participant ID. Suppose it extracts:
+6. **Extract quotations.** The server identifies direct participant quotations in
+   `report.md` (in MVP #1, straight double-quoted spans — rule-based, no AI;
+   ADR-0010), preserving wording and capturing each listed participant ID. Suppose
+   it extracts:
 
    > "We abandoned the onboarding flow after the second screen." — attributed to
    > **P03**
@@ -274,8 +277,8 @@ researcher has an account and is signed in.
 
 7. **Compare against transcripts.** The server compares that quotation against
    participant-labeled speech across both transcripts, checking wording and
-   participant identity. The AI proposes a candidate passage; **the server
-   verifies the returned excerpt appears verbatim in the source** before using
+   participant identity. The server finds a candidate passage (rule-based matching;
+   ADR-0010) and **verifies the excerpt appears verbatim in the source** before using
    it. Suppose the matching passage is found in `interview-p05.md`, spoken by
    **P05**, not P03. The server creates a **participant mismatch** issue (a
    separate issue would be created for a wording difference, and so on). *(TR-08,
@@ -327,13 +330,19 @@ researcher has an account and is signed in.
 
 ## Open decisions
 
-These are not settled and block the features that depend on them.
+Most of these are not settled and block the features that depend on them. (Item 1,
+the AI provider/model, is the exception — resolved for MVP #1 by ADR-0010 and deferred;
+it no longer blocks MVP #1.)
 
-1. **AI provider and model.** Including data-handling (retention, training-use,
-   deletion) policies, accuracy, and cost. The provider must be named in the
-   data-handling notice and its policy reviewed and documented before
-   confidential materials are processed. *(NFR-03; blocks extraction and
-   comparison.)*
+1. **AI provider and model — deferred to a later release (does NOT block MVP #1).**
+   Resolved for MVP #1 by **ADR-0010**: MVP #1's quotation and participant checks are
+   **rule-based** and use no external AI, so this item no longer gates MVP #1. AI is
+   **to be evaluated for a later release** — not a committed approach — one that may
+   look at broader research claims (potentially across the four quality dimensions).
+   If/when AI is adopted, its data-handling (retention, training-use, deletion) policy,
+   accuracy, and cost must be reviewed, and the provider named in the data-handling
+   notice, **before any confidential material is processed** — captured in that
+   release's own ADR. *(NFR-03.)*
 2. **Per-quote classification cutoff (matching rules).** How a single quotation
    is classified against a candidate passage: the handling of punctuation,
    spacing, shortened quotes, and ellipses, and the cutoff that separates a
