@@ -8,6 +8,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Box from "@mui/material/Box";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import ToggleButton from "@mui/material/ToggleButton";
@@ -48,36 +49,70 @@ export default function DecisionControl({
   }
 
   return (
-    <Stack spacing={0.5} sx={{ mt: 1 }}>
-      <Typography variant="caption" color="text.secondary">
+    <Stack spacing={0.75}>
+      <Typography variant="subtitle2" fontWeight={700}>
         Decision
       </Typography>
-      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-        <ToggleButtonGroup
-          exclusive
-          size="small"
-          value={decision}
-          onChange={onChange}
-          disabled={pending}
-          aria-label="Decision for this issue"
-        >
-          {DECISION_VALUES.map((value) => (
-            <ToggleButton key={value} value={value}>
+      <ToggleButtonGroup
+        exclusive
+        value={decision}
+        onChange={onChange}
+        disabled={pending}
+        aria-label="Decision for this issue"
+        sx={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          maxWidth: 460,
+          gap: 0.75,
+          "& .MuiToggleButtonGroup-grouped": {
+            m: 0,
+            border: "1px solid #c7ccd2",
+            borderRadius: 2,
+            minHeight: 44,
+            px: 0.5,
+            py: 0.5,
+            bgcolor: "#f0f1f3",
+            color: "#414953",
+            textTransform: "none",
+            fontSize: "0.8125rem",
+            lineHeight: 1.25,
+            fontWeight: 700,
+            "&:hover": { bgcolor: "#e4e7eb" },
+            "&.Mui-selected": {
+              bgcolor: "#244c9b",
+              color: "#fff",
+              borderColor: "#244c9b",
+              "&:hover": { bgcolor: "#1e4086" },
+            },
+            "&.Mui-focusVisible": {
+              outline: "2px solid",
+              outlineColor: "primary.main",
+              outlineOffset: 2,
+            },
+          },
+        }}
+      >
+        {DECISION_VALUES.map((value) => (
+          <ToggleButton key={value} value={value}>
+            <span>
+              {decision === value && <span aria-hidden="true">✓ </span>}
               {DECISION_LABELS[value]}
-            </ToggleButton>
-          ))}
-        </ToggleButtonGroup>
+            </span>
+          </ToggleButton>
+        ))}
+      </ToggleButtonGroup>
+      <Box role="status">
         {pending && (
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="body2" color="text.secondary">
             Saving…
           </Typography>
         )}
         {!pending && savedMessage && !error && (
-          <Typography variant="caption" color="success.main" role="status">
-            {savedMessage}
+          <Typography variant="body2" color="success.dark" fontWeight={700}>
+            <span aria-hidden="true">✓ </span>{savedMessage}
           </Typography>
         )}
-      </Stack>
+      </Box>
       {error && (
         <Alert severity="error" role="alert" sx={{ py: 0 }}>
           {error}

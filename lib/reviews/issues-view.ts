@@ -52,7 +52,7 @@ export type Evidence =
       report: DiffSeg[];
       transcript: DiffSeg[];
     }
-  | { kind: "plain"; filename: string; excerpt: string };
+  | { kind: "plain"; filename: string; participantId: string | null; excerpt: string };
 
 // One entry per issue. A quotation with two issues yields two entries, placed
 // together, each self-contained (quotation, one label, its explanation, its own
@@ -198,7 +198,7 @@ export function buildIssuesView(args: {
       const transcript = highlightWindow(spoken, win.start, win.end, candChanged);
       return { kind: "diff", filename, participantId, report: diff.a, transcript };
     }
-    return { kind: "plain", filename, excerpt: issue.source_excerpt };
+    return { kind: "plain", filename, participantId, excerpt: issue.source_excerpt };
   };
 
   const withIssues = quotations
