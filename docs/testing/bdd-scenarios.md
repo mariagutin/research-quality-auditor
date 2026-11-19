@@ -118,3 +118,58 @@ If the matching logic regresses (e.g., it misses the mismatch, attributes to the
 wrong participant, invents a source for an unfound quote, or crosses the wording
 threshold), the relevant assertion turns the **Unit tests** job red — which is the
 intended "break-it-on-purpose" behaviour for the pipeline.
+
+---
+
+## Scenario 3 — Selecting an issue shows its labelled evidence (Results screen)
+
+Unlike Scenarios 1–2 (which pin the **checker logic**), this is a
+**presentation-layer** scenario for the Week 5 Results redesign: it pins what the
+researcher sees when they **select** an already-flagged issue, on desktop and on a
+phone. It is meant to be **verified manually** at desktop and phone widths, per
+`docs/manual-browser-checklist.md` — it is not backed by a CI unit test.
+
+**Verification status (2026-11-19):**
+- **Desktop browser check:** passed — verified by Maria in Safari at desktop
+  width.
+- **Mobile (phone-width) browser check:** passed — verified by Maria in Safari at
+  phone width using Responsive Design Mode.
+- **Result in both layouts:** switching the selection between **Participant
+  mismatch** and **Possible wording difference** updated the issue label and the
+  explanation together.
+- **Also done:** a code reading of `app/reviews/[id]/review-issues.tsx` (the
+  desktop evidence panel and the mobile expanded card both render the selected
+  issue's type label and explanation from the same issue entry), and a passing
+  TypeScript check (`npx tsc --noEmit`).
+
+**Use case:** On the Results review screen, a researcher selects a flagged issue to
+read what kind of issue it is and why it was flagged.
+
+**BDD:**
+- **Given** a completed check whose results list at least two issues of different
+  types — one **Possible wording difference** (`wording_mismatch`) and one
+  **Participant mismatch** (`participant_mismatch`),
+- **When** the researcher selects an issue,
+- **Then (desktop)** the evidence panel beside the list **repeats the selected
+  issue's type label** — the same "Possible wording difference" / "Participant
+  mismatch" text shown in the list — **and** explains why it was flagged: for a
+  wording difference, the report quote and the transcript excerpt with the differing
+  words marked; for a participant mismatch, the credited-vs-found participant IDs —
+  shown as an explanation visually separated from the source text,
+- **And (mobile)** the expanded issue card shows **both** the type label and that
+  same explanation inline, beneath the quote,
+- **And** when the researcher switches the selection between the **Possible wording
+  difference** and the **Participant mismatch**, the type label and the explanation
+  update **together** to the newly selected issue — the panel never pairs one
+  issue's label with another issue's evidence.
+
+**Reference:** `docs/architecture.md` → "End-to-end walkthrough (one example)",
+step 8 **"Show the evidence"** (report quote, transcript passage as verbatim escaped
+text, both participant IDs, source filename, and an explanation visually separated
+from the source text). This scenario adds the **issue-type label** alongside that
+explanation and pins the desktop-panel vs. mobile-expanded-card presentations.
+
+**Implemented by:** `app/reviews/[id]/review-issues.tsx` — the list/panel grid on
+desktop and the expandable cards on mobile — with the type labels from
+`lib/reviews/issues-view.ts` (`labelFor`: `wording_mismatch` → "Possible wording
+difference", `participant_mismatch` → "Participant mismatch").
