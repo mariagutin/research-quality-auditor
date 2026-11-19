@@ -130,13 +130,17 @@ phone. It is meant to be **verified manually** at desktop and phone widths, per
 `docs/manual-browser-checklist.md` — it is not backed by a CI unit test.
 
 **Verification status (2026-11-19):**
-- **Desktop browser check:** not yet performed.
-- **Mobile (phone-width) browser check:** not yet performed.
-- **Done so far:** a code reading of `app/reviews/[id]/review-issues.tsx`
-  (the desktop evidence panel and the mobile expanded card both render the
-  selected issue's type label and explanation from the same issue entry), and a
-  passing TypeScript check (`npx tsc --noEmit`). Neither is a substitute for the
-  browser checks above.
+- **Desktop browser check:** passed — verified by Maria in Safari at desktop
+  width.
+- **Mobile (phone-width) browser check:** passed — verified by Maria in Safari at
+  phone width using Responsive Design Mode.
+- **Result in both layouts:** switching the selection between **Participant
+  mismatch** and **Possible wording difference** updated the issue label and the
+  explanation together.
+- **Also done:** a code reading of `app/reviews/[id]/review-issues.tsx` (the
+  desktop evidence panel and the mobile expanded card both render the selected
+  issue's type label and explanation from the same issue entry), and a passing
+  TypeScript check (`npx tsc --noEmit`).
 
 **Use case:** On the Results review screen, a researcher selects a flagged issue to
 read what kind of issue it is and why it was flagged.
