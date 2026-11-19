@@ -71,7 +71,7 @@ export default function DecisionControl({
             minHeight: 44,
             px: 0.5,
             py: 0.5,
-            bgcolor: "#f0f1f3",
+            bgcolor: "#F4FBFF",
             color: "#414953",
             textTransform: "none",
             fontSize: "0.8125rem",

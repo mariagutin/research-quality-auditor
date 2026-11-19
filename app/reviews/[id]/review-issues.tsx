@@ -11,14 +11,16 @@ import type { IssueEntry, IssuesView } from "@/lib/reviews/issues-view";
 import type { DiffSeg } from "@/lib/reviews/text-compare";
 import DecisionControl from "./decision-control";
 
-const activeIssueTint = "#eaf3ff";
+const selectedIssueTint = "#F4FBFF";
+const selectedIssueOutline = "#8D9EA5";
+const panelCardBorder = "1px solid #e9edf2";
 
 function Passage({ segments }: { segments: DiffSeg[] }) {
   return (
     <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
       {segments.map((segment, index) =>
         segment.changed ? (
-          <Box component="mark" key={index} sx={{ bgcolor: "grey.200", color: "text.primary", fontWeight: 700, textDecoration: "underline" }}>
+          <Box component="mark" key={index} sx={{ bgcolor: "#FFE29A", color: "text.primary", fontWeight: 700, textDecoration: "underline" }}>
             {segment.text}
           </Box>
         ) : segment.text,
@@ -34,16 +36,21 @@ function IssueDetail({ entry }: { entry: IssueEntry }) {
 
   return (
     <Stack spacing={1.5} sx={{ overflowWrap: "anywhere" }}>
-      <Typography variant="h6" component="p" fontWeight={700} sx={{ display: { xs: "none", md: "block" } }}>
-        &ldquo;{entry.quote}&rdquo;
-      </Typography>
+      <Box sx={{ display: { xs: "none", md: "block" } }}>
+        <Typography variant="h6" component="p" fontWeight={700}>
+          &ldquo;{entry.quote}&rdquo;
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+          {entry.label.label}
+        </Typography>
+      </Box>
       {showParticipants && (
         <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 1 }}>
           {[
             ["Credited in report", reportCredits],
             ["Found in transcript", sourceParticipant],
           ].map(([label, participant]) => (
-            <Box key={label} sx={{ bgcolor: activeIssueTint, borderRadius: 2, p: 1 }}>
+            <Box key={label} sx={{ bgcolor: "#fff", border: panelCardBorder, borderRadius: 2, p: 1 }}>
               <Typography variant="caption" color="text.secondary">{label}</Typography>
               <Typography variant="subtitle1" fontWeight={700}>{participant}</Typography>
             </Box>
@@ -54,7 +61,7 @@ function IssueDetail({ entry }: { entry: IssueEntry }) {
         <Typography variant="body2">{entry.note}</Typography>
       )}
       {evidence && (
-        <Stack spacing={1.25} sx={{ bgcolor: activeIssueTint, borderLeft: "3px solid", borderColor: "#a3b6cd", borderRadius: 1, p: 1.25 }}>
+        <Stack spacing={1.25} sx={{ bgcolor: "#fff", border: panelCardBorder, borderRadius: 1, p: 1.25 }}>
           {evidence.kind === "diff" && (
             <Box>
               <Typography variant="caption" color="text.secondary" fontWeight={700}>
@@ -152,7 +159,7 @@ export default function ReviewIssues({ view }: { view: IssuesView }) {
               sx={{
                 display: { md: "contents" },
                 border: { xs: "1px solid", md: 0 },
-                borderColor: { xs: open ? "#dce8f7" : "divider" },
+                borderColor: { xs: open ? selectedIssueOutline : "divider" },
                 borderRadius: 2,
                 bgcolor: "background.paper",
               }}
@@ -172,12 +179,12 @@ export default function ReviewIssues({ view }: { view: IssuesView }) {
                   justifyContent: "space-between",
                   textAlign: "left",
                   border: { md: "1px solid" },
-                  borderColor: { md: open ? activeIssueTint : "divider" },
+                  borderColor: { md: open ? selectedIssueOutline : "divider" },
                   borderRadius: 2,
                   borderBottomLeftRadius: { xs: open ? 0 : 8, md: 8 },
                   borderBottomRightRadius: { xs: open ? 0 : 8, md: 8 },
-                  bgcolor: open ? activeIssueTint : "background.paper",
-                  "&:hover": { bgcolor: open ? activeIssueTint : "grey.50" },
+                  bgcolor: open ? selectedIssueTint : "background.paper",
+                  "&:hover": { bgcolor: open ? selectedIssueTint : "grey.50" },
                   "&.Mui-focusVisible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: -2 },
                 }}
               >
@@ -242,8 +249,8 @@ export default function ReviewIssues({ view }: { view: IssuesView }) {
                   gridColumn: { md: 2 },
                   gridRow: { md: "1 / -1" },
                   minWidth: 0,
-                  bgcolor: "background.paper",
-                  border: { md: "1px solid #e9edf2" },
+                  bgcolor: "#fff",
+                  border: { md: panelCardBorder },
                   borderRadius: 2,
                   p: { xs: 1.5, md: 2.5 },
                 }}

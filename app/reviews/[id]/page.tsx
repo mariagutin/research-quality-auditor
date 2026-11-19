@@ -5,6 +5,7 @@
 
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
+import MuiLink from "@mui/material/Link";
 import Box from "@mui/material/Box";
 import GlobalStyles from "@mui/material/GlobalStyles";
 import Stack from "@mui/material/Stack";
@@ -136,8 +137,27 @@ export default async function ReviewPage({
                 fontFamily: '"IBM Plex Sans", Arial, sans-serif',
                 fontSize: { xs: "1rem", sm: "1.125rem" },
                 lineHeight: 1.2,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 1,
               }}
             >
+              <Box
+                component="span"
+                aria-hidden="true"
+                sx={{
+                  bgcolor: "#53565C",
+                  color: "#fff",
+                  borderRadius: 1,
+                  px: 0.75,
+                  py: 0.5,
+                  fontSize: "0.75rem",
+                  letterSpacing: "0.04em",
+                  flexShrink: 0,
+                }}
+              >
+                RQA
+              </Box>
               Research Quality Auditor
             </Typography>
           </Box>
@@ -148,6 +168,16 @@ export default async function ReviewPage({
             an interruption (and completion is picked up) without a manual reload. */}
         {isBusy && <BusyRefresh />}
         <Stack spacing={2}>
+          <MuiLink
+            component={Link}
+            href="/reviews"
+            variant="body2"
+            underline="hover"
+            sx={{ alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 0.75, minHeight: 32 }}
+          >
+            <span aria-hidden="true">←</span>
+            Back to your checks
+          </MuiLink>
           <Stack direction="row" gap={1.5} alignItems="center" justifyContent={isChecked ? "space-between" : undefined}>
             <Typography
               variant="h4"
