@@ -14,9 +14,9 @@ statuses are in "Revision history" below):
   (PR #2), was merged into `week-5-cicd` in `5a98c74` (2026-11-20) and pushed. All
   five jobs passed on both the push run (44804104441) and the pull-request run
   (44805431829).
-- **Not yet merged into `main`.** PR #3 (`week-5-cicd` → `main`) is open. Until it
-  merges, the workflow exists only on `week-5-cicd`, so pushes to other branches
-  don't run it.
+- **Merged into `main`.** PR #3 (`week-5-cicd` → `main`) was merged on 2026-11-20
+  in `c8be4fe`, and the CI run on `main` passed all five jobs (run 44811346167). The
+  workflow is now on `main`, so it also runs on pushes to branches created from it.
 
 > Week 5 quality-assurance work. Builds on the MVP quotation-verification
 > requirements (TR-08, TR-09, NFR-04) and the wording-difference rule (ADR-0006).
@@ -53,9 +53,9 @@ standard CI target.
   needed.*
 - **Typecheck — `npm run typecheck` (`tsc --noEmit`).** Verifies the whole project
   type-checks. Fails on any type error.
-- **Unit tests — `npm run test:unit`.** Runs **four** test files one after another
+- **Unit tests — `npm run test:unit`.** Runs **five** test files one after another
   (`tsx … && tsx …`), so the job fails if any one of them fails. The job's name,
-  "Unit tests (quotation scenarios)", is narrower than what it runs. All four call
+  "Unit tests (quotation scenarios)", is narrower than what it runs. All five call
   pure functions with in-memory data, with no DB, Storage, Docker, network, or env
   (§4):
   1. `scripts/ci/quotation-scenarios.test.mts` (10 checks): the two BDD scenarios
@@ -73,9 +73,14 @@ standard CI target.
   4. `scripts/ci/action-gating.test.mts` (36 checks): the review page's action
      gating. This includes the fail-safe case where `review_op_active` is
      unavailable, so Delete is disabled, Run check is hidden, and a retry is shown.
+  5. `scripts/ci/list-status.test.mts` (34 checks): the review-status chips on
+     *Your checks*. Covers the five labels for completed checks, unchanged statuses
+     for unfinished ones, counts matching the review page's own counting (ADR-0007),
+     and reading every row despite the API's per-request row limit.
 
-  The check counts are the `PASS` lines from a local run on 2026-11-20 (69 in
-  total). The job fails if the matching, results-state, or gating logic regresses.
+  The check counts are the `PASS` lines from local runs on 2026-11-20 (103 in
+  total). The job fails if the matching, results-state, gating, or list-status
+  logic regresses.
   The quotation scenarios were recorded here as the **break-it-on-purpose
   target**. The demonstration actually performed (2026-11-16) broke the **Skill
   checks** job instead (see "Date and status").
@@ -216,3 +221,8 @@ Two separate systems report results on commits and pull requests:
   - §2 Build clarified, and §7 added to separate GitHub CI verification from the
     Vercel preview deployment.
   - §3 now notes `test:skills`.
+- **2026-11-20 (later):** No decision changed.
+  - Status updated: PR #3 was merged into `main` (`c8be4fe`), so the "not yet merged"
+    bullet was replaced.
+  - §2 Unit tests now lists a fifth file, `list-status.test.mts`, added with the
+    review-status chips on *Your checks*.

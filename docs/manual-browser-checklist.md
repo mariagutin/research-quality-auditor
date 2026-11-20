@@ -98,6 +98,41 @@ with psql (container `supabase_db_research-quality-auditor`), or by pasting the 
 
 Delete the review afterward (UI) to clean up, or leave it (local synthetic data).
 
+## 6. Review status on Your checks
+
+Open **/reviews** (*Your checks*). Each check shows one status chip; completed
+checks show the researcher's review progress, never a count:
+
+| The check | Expected chip |
+|---|---|
+| Saved, not checked yet | **Not checked yet** (unchanged) |
+| Uploading / running / failed / being deleted | its existing status, e.g. `processing` (unchanged) |
+| Completed, at least one issue without a saved decision (including none decided) | **Review in progress** |
+| Completed, every issue has a saved decision | **Review complete** |
+| Completed, quotations checked and no issues | **No issues found** |
+| Completed, zero quotations detected | **No quotations found** (never "No issues found") |
+| Completed, but the counts couldn't be loaded | **Review status unavailable** |
+
+- Use the step 1–3 files to see **Review in progress** (before deciding the one
+  issue) and **Review complete** (after deciding it). The **No issues found** and
+  **No quotations found** states use the 2026-11-15 files below
+  (`report-exact-matches.md`, `report-no-quotes.md`).
+- The chip colors are unchanged: completed checks stay blue.
+- **Review status unavailable** can't be produced by hand without breaking the local
+  stack; it is covered by `scripts/ci/list-status.test.mts`, as is reading every row
+  when there are more than the API's per-request row limit (1,000).
+
+**Verified on 2026-11-20 (local) — manual observation by Maria.** On *Your checks*
+in her local browser, against the local stack and synthetic local data, the page
+displayed **Review complete**, **Review in progress**, **No issues found**, and
+**Not checked yet**. These match the statuses expected from the local data at the
+time (worked out from the local database before the check).
+
+Not observed in this pass: **No quotations found** (no zero-quotation check in the
+local data), **Review status unavailable** (not reproducible by hand), and the
+unfinished statuses other than *Not checked yet*. These are covered only by
+`scripts/ci/list-status.test.mts`.
+
 ## Verified on 2026-11-13 (local)
 
 A full pass was run by hand against the local stack. Observed **passes**:
