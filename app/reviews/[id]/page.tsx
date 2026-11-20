@@ -5,7 +5,9 @@
 
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
+import MuiLink from "@mui/material/Link";
 import Box from "@mui/material/Box";
+import GlobalStyles from "@mui/material/GlobalStyles";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import Chip from "@mui/material/Chip";
@@ -19,32 +21,10 @@ import { createClient } from "@/lib/supabase/server";
 import RunCheckButton from "./run-check-button";
 import { buildIssuesView, resultState, type DecisionRow } from "@/lib/reviews/issues-view";
 import { actionGating } from "@/lib/reviews/action-gating";
-import type { DiffSeg } from "@/lib/reviews/text-compare";
-import DecisionControl from "./decision-control";
+import ReviewIssues from "./review-issues";
 import DeleteReviewButton from "./delete-review-button";
 import BusyRefresh from "./busy-refresh";
 import RetryStatus from "./retry-status";
-
-// A passage rendered verbatim, with differing words highlighted.
-function HighlightedPassage({ segments }: { segments: DiffSeg[] }) {
-  return (
-    <Typography variant="body2" component="p" sx={{ fontFamily: "monospace", whiteSpace: "pre-wrap", m: 0 }}>
-      {segments.map((seg, i) =>
-        seg.changed ? (
-          <Box
-            key={i}
-            component="span"
-            sx={{ bgcolor: "warning.light", color: "warning.contrastText", fontWeight: 700, borderRadius: 0.5, px: 0.25 }}
-          >
-            {seg.text}
-          </Box>
-        ) : (
-          <span key={i}>{seg.text}</span>
-        ),
-      )}
-    </Typography>
-  );
-}
 
 export default async function ReviewPage({
   params,
@@ -119,192 +99,204 @@ export default async function ReviewPage({
     review.processing_status === "processing" ||
     review.processing_status === "deleting";
 
-  return (
-    <Box sx={{ maxWidth: 640, mx: "auto", p: 3 }}>
-      {/* While busy, re-fetch the DB-time op state so recovery controls appear after
-          an interruption (and completion is picked up) without a manual reload. */}
-      {isBusy && <BusyRefresh />}
-      <Stack spacing={2}>
-        <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap">
-          <Typography variant="h4" component="h1">
-            {review.name}
-          </Typography>
-          <Chip
-            label={
-              isPreCheck
-                ? "Saved · pre-check"
-                : isChecked
-                  ? "Checked"
-                  : isDeleting
-                    ? "Deletion in progress"
-                    : review.processing_status
-            }
-            color={isPreCheck ? "default" : "primary"}
-            size="small"
+  const reviewFiles = (
+    <List dense disablePadding>
+      {(documents ?? []).map((doc) => (
+        <ListItem key={doc.id} disableGutters>
+          <ListItemText
+            sx={{ overflowWrap: "anywhere" }}
+            primary={doc.filename}
+            secondary={doc.role === "transcript" ? `transcript · ${doc.participant_id ?? "—"}` : "report"}
           />
-        </Stack>
+        </ListItem>
+      ))}
+    </List>
+  );
 
-        {isPreCheck && (
-          <Typography variant="body2" color="text.secondary">
-            Saved. Run the quotation check below.
-          </Typography>
-        )}
-
-        {isDeleting && (
-          <Typography variant="body2" color="text.secondary">
-            This check is being deleted. Other actions are paused until it finishes.
-          </Typography>
-        )}
-
-        {gate.showRunningMessage && (
-          <Typography variant="body2" color="text.secondary">
-            A check is running for this review…
-          </Typography>
-        )}
-
-        {gate.statusUnavailable && (
-          <Alert severity="warning" role="status" action={<RetryStatus />}>
-            We couldn&apos;t load this review&apos;s current status. Actions are paused until it loads — retry.
-          </Alert>
-        )}
-
-        {/* The check runs once, from the pre-check state (and may be re-run for a
-            recoverable failed/stale check). It is hidden while a check is actively
-            running, while deleting, while uploading, or while the op status can't be
-            loaded (fail-safe -- see actionGating). */}
-        {gate.showRunCheck && <RunCheckButton reviewId={id} />}
-
-        {issuesView && (
-          <>
-            <Divider />
-            <Typography variant="h6" component="h2">
-              Results
+  return (
+    <Box sx={{ bgcolor: isChecked ? "background.paper" : undefined, minHeight: isChecked ? "100vh" : undefined }}>
+      {isChecked && (
+        <Box component="header" sx={{ bgcolor: "#f5f6f8", borderBottom: 1, borderColor: "#eaedf0" }}>
+          <GlobalStyles
+            styles={{
+              "@font-face": {
+                fontFamily: "IBM Plex Sans",
+                src: 'url("/fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2")',
+                fontStyle: "normal",
+                fontWeight: 600,
+                fontDisplay: "swap",
+              },
+            }}
+          />
+          <Box sx={{ display: "flex", alignItems: "center", maxWidth: 1120, minHeight: 48, mx: "auto", px: { xs: 2, sm: 3 }, py: 0.75 }}>
+            <Typography
+              variant="subtitle2"
+              fontWeight={600}
+              sx={{
+                color: "#203550",
+                fontFamily: '"IBM Plex Sans", Arial, sans-serif',
+                fontSize: { xs: "1rem", sm: "1.125rem" },
+                lineHeight: 1.2,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 1,
+              }}
+            >
+              <Box
+                component="span"
+                aria-hidden="true"
+                sx={{
+                  bgcolor: "#53565C",
+                  color: "#fff",
+                  borderRadius: 1,
+                  px: 0.75,
+                  py: 0.5,
+                  fontSize: "0.75rem",
+                  letterSpacing: "0.04em",
+                  flexShrink: 0,
+                }}
+              >
+                RQA
+              </Box>
+              Research Quality Auditor
             </Typography>
-            {issuesView.quotationsChecked > 0 && (
-              <Typography variant="body2" color="text.secondary">
-                {`Checked ${issuesView.quotationsChecked} quotation${
-                  issuesView.quotationsChecked === 1 ? "" : "s"
-                } · ${issuesView.totalIssues} issue${
-                  issuesView.totalIssues === 1 ? "" : "s"
-                } found`}
-              </Typography>
-            )}
-
-            {issuesView.totalIssues > 0 && (
-              <Typography variant="body2" color="text.secondary">
-                {issuesView.reviewedCount === issuesView.totalIssues
-                  ? `All ${issuesView.totalIssues} issue${issuesView.totalIssues === 1 ? "" : "s"} reviewed. Your decisions are saved.`
-                  : `${issuesView.reviewedCount} of ${issuesView.totalIssues} issue${issuesView.totalIssues === 1 ? "" : "s"} reviewed`}
-              </Typography>
-            )}
-
-            {resultState(issuesView) === "no_quotations" ? (
-              <Alert severity="info" role="status">
-                No quotations found to check. No text in double quotation marks was found in the report.
-              </Alert>
-            ) : resultState(issuesView) === "no_issues" ? (
-              <Alert severity="success" role="status">
-                No issues found. Every quotation matched a participant&apos;s transcript.
-              </Alert>
-            ) : (
-              <Stack spacing={2.5} component="ol" sx={{ listStyle: "none", m: 0, p: 0 }}>
-                {issuesView.entries.map((entry) => (
-                  <Box key={`${entry.quotationId}-${entry.issueIndex}`} component="li">
-                    {entry.issueCount > 1 && (
-                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25 }}>
-                        Issue {entry.issueIndex} of {entry.issueCount} for this quotation
-                      </Typography>
-                    )}
-                    <Typography variant="body1" sx={{ fontStyle: "italic" }}>
-                      &ldquo;{entry.quote}&rdquo;
-                    </Typography>
-
-                    <Box sx={{ mt: 0.75 }}>
-                      <Chip
-                        label={entry.label.label}
-                        size="small"
-                        color={
-                          entry.label.kind === "participant_mismatch"
-                            ? "warning"
-                            : entry.label.kind === "wording_mismatch"
-                              ? "info"
-                              : "default"
-                        }
-                      />
-                    </Box>
-
-                    {entry.note && (
-                      <Typography variant="body2" sx={{ mt: 0.5 }}>
-                        {entry.note}
-                      </Typography>
-                    )}
-
-                    {entry.evidence?.kind === "plain" && (
-                      <Box sx={{ mt: 1, bgcolor: "action.hover", borderRadius: 1, px: 1.5, py: 1 }}>
-                        <Typography variant="caption" color="text.secondary">
-                          {entry.evidence.filename}
-                        </Typography>
-                        <Typography variant="body2" sx={{ fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
-                          {entry.evidence.excerpt}
-                        </Typography>
-                      </Box>
-                    )}
-
-                    {entry.evidence?.kind === "diff" && (
-                      <Box sx={{ mt: 1, bgcolor: "action.hover", borderRadius: 1, px: 1.5, py: 1 }}>
-                        <Typography variant="caption" color="text.secondary">
-                          Report
-                        </Typography>
-                        <HighlightedPassage segments={entry.evidence.report} />
-                        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-                          {entry.evidence.filename}
-                          {entry.evidence.participantId ? ` · ${entry.evidence.participantId}` : ""} · verbatim
-                        </Typography>
-                        <HighlightedPassage segments={entry.evidence.transcript} />
-                      </Box>
-                    )}
-
-                    <DecisionControl issueId={entry.issueId} decision={entry.decision} />
-                  </Box>
-                ))}
-              </Stack>
-            )}
-          </>
-        )}
-
-        <Divider />
-        <Typography variant="h6" component="h2">
-          Files in this check
-        </Typography>
-        <List dense disablePadding>
-          {(documents ?? []).map((doc) => (
-            <ListItem key={doc.filename} disableGutters>
-              <ListItemText
-                primary={doc.filename}
-                secondary={
-                  doc.role === "transcript"
-                    ? `transcript · ${doc.participant_id ?? "—"}`
-                    : "report"
-                }
-              />
-            </ListItem>
-          ))}
-        </List>
-
-        <Divider />
-        <DeleteReviewButton
-          reviewId={id}
-          status={review.processing_status}
-          opActive={opActive === true}
-          statusUnavailable={gate.statusUnavailable}
-        />
-
-        <Box>
-          <Button component={Link} href="/reviews/new" variant="outlined" size="small">
-            Start another check
-          </Button>
+          </Box>
         </Box>
-      </Stack>
+      )}
+      <Box component="main" sx={{ maxWidth: isChecked ? 1120 : 640, mx: "auto", p: { xs: 2, sm: 3 } }}>
+        {/* While busy, re-fetch the DB-time op state so recovery controls appear after
+            an interruption (and completion is picked up) without a manual reload. */}
+        {isBusy && <BusyRefresh />}
+        <Stack spacing={2}>
+          <MuiLink
+            component={Link}
+            href="/reviews"
+            variant="body2"
+            underline="hover"
+            sx={{ alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 0.75, minHeight: 32 }}
+          >
+            <span aria-hidden="true">←</span>
+            Back to your checks
+          </MuiLink>
+          <Stack direction="row" gap={1.5} alignItems="center" justifyContent={isChecked ? "space-between" : undefined}>
+            <Typography
+              variant="h4"
+              component="h1"
+              sx={{
+                fontWeight: isChecked ? 700 : undefined,
+                fontSize: isChecked ? { xs: "1.375rem", sm: "1.625rem" } : undefined,
+                overflowWrap: "anywhere",
+                minWidth: 0,
+              }}
+            >
+              {review.name}
+            </Typography>
+            <Chip
+              label={
+                isPreCheck
+                  ? "Saved · pre-check"
+                  : isChecked
+                    ? "Check complete"
+                    : isDeleting
+                      ? "Deletion in progress"
+                      : review.processing_status
+              }
+              color={isPreCheck || isChecked ? "default" : "primary"}
+              sx={isChecked ? { bgcolor: "grey.100", color: "text.secondary", fontWeight: 700 } : undefined}
+              size="small"
+            />
+          </Stack>
+
+          {isPreCheck && (
+            <Typography variant="body2" color="text.secondary">
+              Saved. Run the quotation check below.
+            </Typography>
+          )}
+
+          {isDeleting && (
+            <Typography variant="body2" color="text.secondary">
+              This check is being deleted. Other actions are paused until it finishes.
+            </Typography>
+          )}
+
+          {gate.showRunningMessage && (
+            <Typography variant="body2" color="text.secondary">
+              A check is running for this review…
+            </Typography>
+          )}
+
+          {gate.statusUnavailable && (
+            <Alert severity="warning" role="status" action={<RetryStatus />}>
+              We couldn&apos;t load this review&apos;s current status. Actions are paused until it loads — retry.
+            </Alert>
+          )}
+
+          {/* The check runs once, from the pre-check state (and may be re-run for a
+              recoverable failed/stale check). It is hidden while a check is actively
+              running, while deleting, while uploading, or while the op status can't be
+              loaded (fail-safe -- see actionGating). */}
+          {gate.showRunCheck && <RunCheckButton reviewId={id} />}
+
+          {issuesView && (
+            <>
+              {issuesView.quotationsChecked > 0 && (
+                <Typography variant="body2" color="text.secondary">
+                  {`Checked ${issuesView.quotationsChecked} quotation${
+                    issuesView.quotationsChecked === 1 ? "" : "s"
+                  } · ${issuesView.totalIssues} issue${
+                    issuesView.totalIssues === 1 ? "" : "s"
+                  } found`}
+                </Typography>
+              )}
+
+              {resultState(issuesView) === "no_quotations" ? (
+                <Alert severity="info" role="status">
+                  No quotations found to check. No text in double quotation marks was found in the report.
+                </Alert>
+              ) : resultState(issuesView) === "no_issues" ? (
+                <Alert severity="success" role="status">
+                  No issues found. Every quotation matched a participant&apos;s transcript.
+                </Alert>
+              ) : (
+                <ReviewIssues view={issuesView} />
+              )}
+            </>
+          )}
+
+          <Divider />
+          {isChecked ? (
+            <Box component="details">
+              <Typography
+                component="summary"
+                variant="subtitle1"
+                sx={{ cursor: "pointer", fontWeight: 700, py: 1, minHeight: 44 }}
+              >
+                Files in this check ({documents?.length ?? 0})
+              </Typography>
+              {reviewFiles}
+            </Box>
+          ) : (
+            <>
+              <Typography variant="h6" component="h2">Files in this check</Typography>
+              {reviewFiles}
+            </>
+          )}
+
+          <Divider />
+          <DeleteReviewButton
+            reviewId={id}
+            status={review.processing_status}
+            opActive={opActive === true}
+            statusUnavailable={gate.statusUnavailable}
+          />
+
+          <Box>
+            <Button component={Link} href="/reviews/new" variant="outlined" size="small">
+              Start another check
+            </Button>
+          </Box>
+        </Stack>
+      </Box>
     </Box>
   );
 }
