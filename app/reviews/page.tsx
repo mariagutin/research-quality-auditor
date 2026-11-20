@@ -11,14 +11,10 @@ import Chip from "@mui/material/Chip";
 import Button from "@mui/material/Button";
 import { createClient } from "@/lib/supabase/server";
 import { resumePendingDeletions } from "@/lib/reviews/delete-review";
+import { loadReviewProgress } from "@/lib/reviews/list-progress";
+import { reviewListStatus } from "@/lib/reviews/list-status";
 
 const DATE_FORMAT = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" });
-
-function statusLabel(status: string): string {
-  if (status === "draft") return "Not checked yet";
-  if (status === "complete") return "Checked";
-  return status; // processing / failed / deleting
-}
 
 export default async function ReviewsListPage() {
   const supabase = await createClient();
@@ -39,6 +35,11 @@ export default async function ReviewsListPage() {
     .from("reviews")
     .select("id, name, processing_status, created_at")
     .order("created_at", { ascending: false });
+
+  // Review progress for completed checks only. `null` means the counts couldn't be
+  // loaded completely; those checks show "Review status unavailable".
+  const completedIds = (reviews ?? []).filter((r) => r.processing_status === "complete").map((r) => r.id);
+  const progress = await loadReviewProgress(supabase, user.id, completedIds);
 
   return (
     <Container maxWidth="md" sx={{ py: 6 }}>
@@ -88,7 +89,7 @@ export default async function ReviewsListPage() {
                   </Box>
                   <Chip
                     size="small"
-                    label={statusLabel(review.processing_status)}
+                    label={reviewListStatus(review.processing_status, progress?.get(review.id) ?? null)}
                     color={review.processing_status === "complete" ? "primary" : "default"}
                   />
                 </Box>
