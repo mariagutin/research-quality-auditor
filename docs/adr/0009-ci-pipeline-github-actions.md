@@ -1,8 +1,22 @@
-# ADR-0009: CI pipeline on GitHub Actions (four checks)
+# ADR-0009: CI pipeline on GitHub Actions (five jobs)
 
 ## Date and status
-2026-11-14. Accepted (implemented locally on branch `week-5-cicd`; **not committed,
-pushed, or deployed** yet).
+Decided 2026-11-14. **Accepted and implemented.** Status as of 2026-11-20 (earlier
+statuses are in "Revision history" below):
+
+- **Committed and pushed.** Committed on branch `week-5-cicd` in `249e731`
+  (2026-11-16) and pushed to GitHub. The pipeline has run on every push since.
+- **Failure-and-recovery demonstration completed** (2026-11-16) on the Skill checks
+  job. `a371478` removed the `ux-review` description, and only Skill checks failed
+  (run 43973229896). `36f8ad6` restored it, and all five jobs passed again
+  (run 43973504435).
+- **Up to date with `main`.** `main`, including the Results screen redesign
+  (PR #2), was merged into `week-5-cicd` in `5a98c74` (2026-11-20) and pushed. All
+  five jobs passed on both the push run (44804104441) and the pull-request run
+  (44805431829).
+- **Not yet merged into `main`.** PR #3 (`week-5-cicd` → `main`) is open. Until it
+  merges, the workflow exists only on `week-5-cicd`, so pushes to other branches
+  don't run it.
 
 > Week 5 quality-assurance work. Builds on the MVP quotation-verification
 > requirements (TR-08, TR-09, NFR-04) and the wording-difference rule (ADR-0006).
@@ -39,16 +53,38 @@ standard CI target.
   needed.*
 - **Typecheck — `npm run typecheck` (`tsc --noEmit`).** Verifies the whole project
   type-checks. Fails on any type error.
-- **Unit tests — `npm run test:unit` (`tsx scripts/ci/quotation-scenarios.test.mts`).**
-  Verifies the two BDD scenarios against the **pure** `analyzeReport`:
-  *participant mismatch* (quote credited to P03 but verbatim only in P05 → a single
-  `participant_mismatch` with P05's passage + source document) and *quote not found*
-  (no exact and no ≥0.70/≥4-word match → `quote_not_found`, **no** source passage,
-  nothing invented). Fails if the matching logic regresses. **This is the
-  break-it-on-purpose target.**
-- **Build — `npm run build` (`next build`).** A **production-compilation** check —
-  the same compile Vercel runs on deploy (routes build, server/client boundaries
-  valid, imports resolve). It **also lints and type-checks** (Next's default), so it
+- **Unit tests — `npm run test:unit`.** Runs **four** test files one after another
+  (`tsx … && tsx …`), so the job fails if any one of them fails. The job's name,
+  "Unit tests (quotation scenarios)", is narrower than what it runs. All four call
+  pure functions with in-memory data, with no DB, Storage, Docker, network, or env
+  (§4):
+  1. `scripts/ci/quotation-scenarios.test.mts` (10 checks): the two BDD scenarios
+     against `analyzeReport`. *Participant mismatch*: a quote credited to P03 but
+     verbatim only in P05 gives a single `participant_mismatch` with P05's passage
+     and source document. *Quote not found*: no exact match and no ≥0.70/≥4-word
+     match gives `quote_not_found`, with **no** source passage and nothing
+     invented.
+  2. `scripts/ci/turn-matching.test.mts` (15 checks): full-turn parsing, speaker
+     boundaries, moderator exclusion, ordinary colons, shorter source passages, the
+     fitting-alignment candidate window, and the distant-word regression (ADR-0006).
+  3. `scripts/ci/result-state.test.mts` (8 checks): the three results states the
+     review page chooses between, which are `no_quotations` (TR-18), `no_issues`
+     (TR-17), and `has_issues`.
+  4. `scripts/ci/action-gating.test.mts` (36 checks): the review page's action
+     gating. This includes the fail-safe case where `review_op_active` is
+     unavailable, so Delete is disabled, Run check is hidden, and a retry is shown.
+
+  The check counts are the `PASS` lines from a local run on 2026-11-20 (69 in
+  total). The job fails if the matching, results-state, or gating logic regresses.
+  The quotation scenarios were recorded here as the **break-it-on-purpose
+  target**. The demonstration actually performed (2026-11-16) broke the **Skill
+  checks** job instead (see "Date and status").
+- **Build — `npm run build` (`next build`).** A **production-compilation** check
+  using the same `next build` command Vercel runs when it builds the app (routes
+  build, server/client boundaries valid, imports resolve). It runs on GitHub's
+  runners with placeholder public env values (§5) and **deploys nothing**. §7 covers
+  how it differs from Vercel's preview deployment. It **also lints and type-checks**
+  (Next's default), so it
   fails on a production build error, a type error, **or** a lint error — overlapping
   the Lint/Typecheck jobs on purpose (defense-in-depth): the dedicated jobs give
   fast, clearly-labeled feedback, and the build proves those same checks hold in the
@@ -59,7 +95,7 @@ standard CI target.
   Next) + `.eslintrc.json` → `{ "extends": "next/core-web-vitals" }`.
 - `tsx ^4.20.0` as a **devDependency** (so CI runs the unit tests from
   `node_modules` via `npm ci`, not an on-the-fly `npx` fetch).
-- `package.json` scripts: `typecheck`, `test:unit`.
+- `package.json` scripts: `typecheck`, `test:unit`, and later `test:skills` (§6).
 - `next.config.mjs` is left at its default, so `next build` **retains ESLint +
   type-checking** during the production compile (in addition to the dedicated Lint
   and Typecheck jobs).
@@ -118,6 +154,36 @@ repo**. Approach:
 - **Dependency added.** `yaml` (v2) as a devDependency, so the validator parses
   frontmatter with a real YAML parser under `npm ci`.
 
+### 7. GitHub CI verification vs. Vercel preview deployment
+
+Two separate systems report results on commits and pull requests:
+
+- **GitHub CI (this ADR)** runs the five jobs in `.github/workflows/ci.yml` on
+  GitHub's runners. It **verifies** the code by running lint, types, unit tests,
+  skill structure, and a production compile with placeholder values. It deploys
+  nothing and never connects to a real database. Its results appear as the five
+  named checks.
+- **Vercel preview deployment** comes from Vercel's own Git integration. That
+  integration is configured in the Vercel project, not in this repo, which has no
+  `vercel.json`. When a branch is pushed, Vercel builds the app with the Vercel
+  project's environment variables and publishes a preview URL. It reports back as
+  the **Vercel** commit status and the **Vercel Preview Comments** check, as
+  observed for `36f8ad6` and `5a98c74`.
+- **Build command.** The repo's `npm run build` runs `next build`, and in the
+  current configuration (`next.config.mjs` is empty, so Next's defaults apply)
+  `next build` runs with linting and type checking enabled. A lint or type error
+  therefore fails that build. **Not verified:** whether the Vercel project
+  overrides its build command at the project level. If it uses the repo's build,
+  as Vercel does for Next.js by default, its builds lint and type-check too.
+- **What each one shows.** A green CI run shows the code passes the five checks,
+  but not that a preview deployment works. A successful Vercel preview shows the
+  app built and was deployed on Vercel. Vercel doesn't run our separate
+  `test:unit` or `test:skills` commands, so unit-test and skill-check results come
+  only from GitHub CI. Which Supabase project a preview connects to depends on
+  Vercel's environment settings, which this ADR doesn't record.
+- **Unchanged by this ADR.** Vercel's deployment settings were left as they were,
+  and CI has no deploy step.
+
 ## Open / deferred
 - **Week 1 Claude Skills gate-check — RESOLVED 2026-11-16.** Morgan confirmed the
   three skills become CI checks in this app repo; implemented as the **Skill checks**
@@ -134,3 +200,19 @@ repo**. Approach:
   15.5.29. A future migration to the ESLint CLI is noted, not done.
 - CI covers only pure/fast checks today; database-touching tests remain local until a
   Supabase-in-CI job is justified.
+
+## Revision history
+- **2026-11-14:** Decision written. Title "four checks". Status "implemented
+  locally on branch `week-5-cicd`; **not committed, pushed, or deployed** yet".
+- **2026-11-16:** §6 Skill checks added, making five jobs (§1 updated; the title
+  still said "four checks"). Committed in `249e731` and pushed. The
+  failure-and-recovery demonstration was completed the same day.
+- **2026-11-20:** Brought up to date without changing any decision:
+  - Title changed from "four checks" to "five jobs".
+  - Status rewritten to cover the commit, push, demonstration, the merge of `main`
+    (`5a98c74`), and open PR #3.
+  - §2 Unit tests now lists all four files `test:unit` runs. It previously
+    described only `quotation-scenarios.test.mts`.
+  - §2 Build clarified, and §7 added to separate GitHub CI verification from the
+    Vercel preview deployment.
+  - §3 now notes `test:skills`.
