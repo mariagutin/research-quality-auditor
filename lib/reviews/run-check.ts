@@ -14,6 +14,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { wordNorms, contiguousContains, bestWindow } from "./text-compare";
+import { transcriptCountError, fileSizeError, totalSizeError } from "./budgets";
 
 export const REVIEW_FILES_BUCKET = "review-files";
 
@@ -498,6 +499,30 @@ export async function runReviewCheck(
     const transcripts = docs.filter((d) => d.role === "transcript");
     if (!report) return await fail("This review has no report.");
     if (transcripts.length === 0) return await fail("This review has no transcripts.");
+
+    // SEC-02 (check boundary): re-verify the file-count and size budget before the
+    // expensive download + analysis. Save already enforced this; re-checking here
+    // is defense in depth (e.g. if limits tightened after a review was saved).
+    const countErr = transcriptCountError(transcripts.length);
+    if (countErr) return await fail(countErr);
+    const folder = (report.storage_path as string).replace(/\/[^/]*$/, "");
+    const { data: listing } = await supabase.storage.from(REVIEW_FILES_BUCKET).list(folder, { limit: 1000 });
+    if (listing) {
+      const sizeByName = new Map<string, number>();
+      for (const o of listing) {
+        const size = (o as { metadata?: { size?: number } | null }).metadata?.size;
+        if (typeof size === "number") sizeByName.set(o.name, size);
+      }
+      const sized = docs
+        .filter((d) => sizeByName.has(d.filename as string))
+        .map((d) => ({ filename: d.filename as string, bytes: sizeByName.get(d.filename as string)! }));
+      if (sized.length === docs.length) {
+        const tooBig = fileSizeError(sized);
+        if (tooBig) return await fail(tooBig.message);
+        const over = totalSizeError(sized);
+        if (over) return await fail(over);
+      }
+    }
 
     const reportText = await downloadText(supabase, report.storage_path as string);
     if (reportText === null) return await fail(`Could not read ${report.filename}.`);
