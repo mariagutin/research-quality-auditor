@@ -37,6 +37,7 @@ import {
   touchUploadAction,
 } from "../actions";
 import type { FinishSaveResult } from "@/lib/reviews/finish-save";
+import { MAX_FILE_BYTES, MAX_TRANSCRIPTS, formatKb } from "@/lib/reviews/budgets";
 
 const BUCKET = "review-files";
 
@@ -52,6 +53,10 @@ type Phase =
 function validateFile(file: File): string | undefined {
   if (!/\.md$/i.test(file.name)) return "Must be a .md file.";
   if (file.size === 0) return "This file is empty.";
+  // SEC-02: per-file size ceiling (the server and Storage enforce this too).
+  if (file.size > MAX_FILE_BYTES) {
+    return `Too large (${formatKb(file.size)}). Max ${formatKb(MAX_FILE_BYTES)} per file.`;
+  }
   return undefined;
 }
 
@@ -69,6 +74,8 @@ export default function UploadForm() {
   const [acknowledged, setAcknowledged] = useState(false);
   const [report, setReport] = useState<Picked | null>(null);
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
+  // SEC-02: shown when the researcher tries to exceed the transcript cap.
+  const [limitNotice, setLimitNotice] = useState<string | null>(null);
   // The review id and its upload lease token come from begin_upload (review-row-
   // first). Both are reused while the attempt resumes, and cleared when the inputs
   // change or the attempt is superseded, so the next save starts a fresh attempt.
@@ -115,6 +122,11 @@ export default function UploadForm() {
 
   function onAddTranscript(file?: File) {
     if (!file) return;
+    if (transcripts.length >= MAX_TRANSCRIPTS) {
+      setLimitNotice(`A review can include at most ${MAX_TRANSCRIPTS} transcripts.`);
+      return;
+    }
+    setLimitNotice(null);
     setTranscripts((prev) => [
       ...prev,
       { key: crypto.randomUUID(), file, participantId: "", error: validateFile(file) },
@@ -465,11 +477,16 @@ export default function UploadForm() {
           <Button
             sx={{ mt: 1 }}
             size="small"
-            disabled={busy}
+            disabled={busy || transcripts.length >= MAX_TRANSCRIPTS}
             onClick={() => addTranscriptRef.current?.click()}
           >
             + Add transcript
           </Button>
+          {limitNotice && (
+            <Alert severity="info" sx={{ mt: 1 }} onClose={() => setLimitNotice(null)}>
+              {limitNotice}
+            </Alert>
+          )}
         </Box>
 
         {label && (

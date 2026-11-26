@@ -31,6 +31,14 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { cleanupDeadAttempts, cleanupPending } from "./upload-cleanup";
+import {
+  MAX_FILE_BYTES,
+  MAX_TOTAL_BYTES,
+  fileSizeError,
+  totalSizeError,
+  transcriptCountError,
+  type SizedFile,
+} from "./budgets";
 
 export const REVIEW_FILES_BUCKET = "review-files";
 
@@ -131,6 +139,11 @@ function validateShape(
   }
   if (transcripts.length < 1) {
     return { ok: false, message: "At least one transcript is required." };
+  }
+  // SEC-02 budget: cap the number of transcripts (file count) at the save gate.
+  const tooMany = transcriptCountError(transcripts.length);
+  if (tooMany) {
+    return { ok: false, message: tooMany };
   }
   const names = new Set<string>();
   for (const d of documents) {
@@ -236,7 +249,9 @@ type VerifyResult =
   // Expected files that are not present in Storage -> an interrupted upload.
   | { ok: false; kind: "missing"; message: string; missing: string[] }
   // A present file whose contents are not usable -> must be replaced/corrected.
-  | { ok: false; kind: "rejected"; message: string; filename: string; clientId: string; role: DocumentRole };
+  | { ok: false; kind: "rejected"; message: string; filename: string; clientId: string; role: DocumentRole }
+  // The files are within count but exceed the total per-review byte budget.
+  | { ok: false; kind: "over_budget"; message: string };
 
 /**
  * Verify every expected file is present under the review's folder AND that its
@@ -266,7 +281,31 @@ async function verifyFiles(
     return { ok: false, kind: "missing", missing, message: `${label} finish uploading.` };
   }
 
+  // 1b) SEC-02 budget by size, read from the Storage listing BEFORE we download
+  //     anything, so an oversize file is rejected before expensive work. (The
+  //     bucket's own file_size_limit is the hard ceiling; this is the second gate
+  //     and also enforces the per-review total.) If the listing omits sizes, the
+  //     download loop below re-checks each file's real byte length as a backstop.
+  const sizeByName = new Map<string, number>();
+  for (const o of listing ?? []) {
+    const size = (o as { metadata?: { size?: number } | null }).metadata?.size;
+    if (typeof size === "number") sizeByName.set(o.name, size);
+  }
+  const listedSizes: SizedFile[] = expected
+    .filter((d) => sizeByName.has(d.filename))
+    .map((d) => ({ filename: d.filename, bytes: sizeByName.get(d.filename)! }));
+  if (listedSizes.length === expected.length) {
+    const tooBig = fileSizeError(listedSizes);
+    if (tooBig) {
+      const doc = expected.find((d) => d.filename === tooBig.filename)!;
+      return { ok: false, kind: "rejected", filename: doc.filename, clientId: doc.clientId, role: doc.role, message: tooBig.message };
+    }
+    const over = totalSizeError(listedSizes);
+    if (over) return { ok: false, kind: "over_budget", message: over };
+  }
+
   // 2) Contents of the present files.
+  let totalBytes = 0;
   for (const doc of expected) {
     const { data: blob, error: downloadError } = await supabase.storage
       .from(REVIEW_FILES_BUCKET)
@@ -285,6 +324,19 @@ async function verifyFiles(
     const bytes = await blob.arrayBuffer();
     if (bytes.byteLength === 0) {
       return { ok: false, kind: "rejected", filename: doc.filename, clientId: doc.clientId, role: doc.role, message: `${doc.filename} is empty.` };
+    }
+    // SEC-02 backstop on the true byte length (covers a listing without sizes).
+    totalBytes += bytes.byteLength;
+    if (bytes.byteLength > MAX_FILE_BYTES) {
+      const tooBig = fileSizeError([{ filename: doc.filename, bytes: bytes.byteLength }])!;
+      return { ok: false, kind: "rejected", filename: doc.filename, clientId: doc.clientId, role: doc.role, message: tooBig.message };
+    }
+    if (totalBytes > MAX_TOTAL_BYTES) {
+      return {
+        ok: false,
+        kind: "over_budget",
+        message: totalSizeError([{ filename: doc.filename, bytes: totalBytes }]) ?? "These files exceed the per-review size budget.",
+      };
     }
 
     let text: string;
@@ -411,6 +463,11 @@ export async function finishReviewSave(
         documentId: verification.clientId,
         role: verification.role,
       };
+    }
+    if (verification.kind === "over_budget") {
+      // Within the file count but over the total byte budget: an overall input
+      // error (not tied to one file). Not retryable as-is.
+      return { status: "invalid", message: verification.message };
     }
     // list_error -> transient: keep files, let the researcher retry.
     return {

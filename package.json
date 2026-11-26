@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test:unit": "tsx scripts/ci/quotation-scenarios.test.mts && tsx scripts/ci/turn-matching.test.mts && tsx scripts/ci/result-state.test.mts && tsx scripts/ci/action-gating.test.mts && tsx scripts/ci/list-status.test.mts",
+    "test:unit": "tsx scripts/ci/quotation-scenarios.test.mts && tsx scripts/ci/turn-matching.test.mts && tsx scripts/ci/result-state.test.mts && tsx scripts/ci/action-gating.test.mts && tsx scripts/ci/list-status.test.mts && tsx scripts/ci/budgets.test.mts",
     "test:skills": "tsx scripts/ci/skill-structure.test.mts"
   },
   "dependencies": {
